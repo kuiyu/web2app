@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>无滚动条和自动缩放测试</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: 'Microsoft YaHei', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        }
+        
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        }
+        
+        .info-box {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .info-box h2 {
+            margin-bottom: 10px;
+            color: #ffdd40;
+        }
+        
+        .test-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 20px;
+            margin-top: 30px;
+        }
+        
+        .test-item {
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 10px;
+            padding: 15px;
+            text-align: center;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        
+        .test-item:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+        }
+        
+        .test-item h3 {
+            color: #4cd964;
+            margin-bottom: 10px;
+        }
+        
+        .test-content {
+            height: 150px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            margin-bottom: 10px;
+        }
+        
+        .dimensions {
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 1000;
+        }
+        
+        .instructions {
+            background: rgba(0, 0, 0, 0.3);
+            border-left: 4px solid #ffdd40;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        
+        .instructions h3 {
+            color: #ffdd40;
+            margin-bottom: 10px;
+        }
+        
+        .instructions ul {
+            padding-left: 20px;
+        }
+        
+        .instructions li {
+            margin-bottom: 8px;
+        }
+        
+        @media (max-width: 768px) {
+            .test-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            h1 {
+                font-size: 2em;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📏 无滚动条和自动缩放测试</h1>
+        
+        <div class="info-box">
+            <h2>测试说明</h2>
+            <p>这个页面用于测试WebAppLauncher的无滚动条和自动缩放功能。页面内容应该自适应窗体大小，不显示滚动条。</p>
+        </div>
+        
+        <div class="instructions">
+            <h3>✅ 预期效果</h3>
+            <ul>
+                <li>页面应该完全填充WebView2控件，没有滚动条</li>
+                <li>当调整窗体大小时，页面内容应该自动缩放以适应新尺寸</li>
+                <li>网页的实际内容尺寸保持不变，只是视觉上缩放</li>
+                <li>右下角会显示当前的窗体尺寸信息</li>
+            </ul>
+        </div>
+        
+        <div class="test-grid">
+            <div class="test-item">
+                <div class="test-content">
+                    <h3>测试区域 1</h3>
+                </div>
+                <p>这个区域用于测试布局适应</p>
+            </div>
+            
+            <div class="test-item">
+                <div class="test-content">
+                    <h3>测试区域 2</h3>
+                </div>
+                <p>检查内容是否自动调整</p>
+            </div>
+            
+            <div class="test-item">
+                <div class="test-content">
+                    <h3>测试区域 3</h3>
+                </div>
+                <p>验证缩放功能</p>
+            </div>
+            
+            <div class="test-item">
+                <div class="test-content">
+                    <h3>测试区域 4</h3>
+                </div>
+                <p>确认无滚动条</p>
+            </div>
+        </div>
+        
+        <div class="info-box">
+            <h2>测试步骤</h2>
+            <ol>
+                <li>观察页面是否完整显示，没有滚动条</li>
+                <li>调整窗体大小，观察内容是否自动缩放</li>
+                <li>最大化/还原窗体，检查缩放效果</li>
+                <li>查看右下角的尺寸显示是否正确更新</li>
+            </ol>
+        </div>
+    </div>
+    
+    <div class="dimensions" id="dimensions">
+        窗体尺寸: <span id="width">0</span> × <span id="height">0</span>px
+    </div>
+    
+    <script>
+        // 更新窗体尺寸显示
+        function updateDimensions() {
+            document.getElementById('width').textContent = window.innerWidth;
+            document.getElementById('height').textContent = window.innerHeight;
+        }
+        
+        // 初始化和监听窗口大小变化
+        updateDimensions();
+        window.addEventListener('resize', updateDimensions);
+        
+        // 监听来自宿主应用的消息
+        window.chrome.webview.addEventListener('message', function(event) {
+            console.log('收到宿主应用消息:', event.data);
+            if (event.data.includes('缩放')) {
+                // 显示缩放信息
+                const infoBox = document.querySelector('.info-box');
+                const newInfo = document.createElement('div');
+                newInfo.className = 'info-box';
+                newInfo.innerHTML = `<h2>🎯 缩放信息</h2><p>${event.data}</p>`;
+                document.querySelector('.container').insertBefore(newInfo, infoBox);
+            }
+        });
+        
+        // 发送页面加载完成消息
+        window.chrome.webview.postMessage('测试页面已加载完成，等待缩放应用');
+    </script>
+</body>
+</html>

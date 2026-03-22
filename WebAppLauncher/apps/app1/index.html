@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>仪表板应用</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 40px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .header h1 {
+            font-size: 2.2rem;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1rem;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 30px 20px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 25px;
+            margin-bottom: 40px;
+        }
+
+        .stat-card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            border-left: 5px solid #667eea;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 25px rgba(0, 0, 0, 0.12);
+        }
+
+        .stat-card h3 {
+            font-size: 1rem;
+            color: #666;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .stat-card .value {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .stat-card .trend {
+            font-size: 0.9rem;
+            padding: 4px 12px;
+            border-radius: 20px;
+            display: inline-block;
+        }
+
+        .trend.up {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .trend.down {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .content-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 30px;
+        }
+
+        .main-content {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+        }
+
+        .sidebar {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            margin-bottom: 25px;
+            color: #444;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        .activity-list {
+            list-style: none;
+        }
+
+        .activity-item {
+            padding: 15px 0;
+            border-bottom: 1px solid #f0f0f0;
+            display: flex;
+            align-items: center;
+        }
+
+        .activity-item:last-child {
+            border-bottom: none;
+        }
+
+        .activity-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: #e3f2fd;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 15px;
+            font-size: 1.2rem;
+        }
+
+        .activity-details {
+            flex: 1;
+        }
+
+        .activity-title {
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .activity-time {
+            font-size: 0.9rem;
+            color: #888;
+        }
+
+        .chart-container {
+            height: 300px;
+            margin-top: 20px;
+            position: relative;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 30px;
+            color: #666;
+            font-size: 0.9rem;
+            border-top: 1px solid #e0e0e0;
+            margin-top: 40px;
+        }
+
+        .notification {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #28a745;
+            color: white;
+            padding: 15px 25px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            display: none;
+            z-index: 1000;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .stat-card, .main-content, .sidebar {
+            animation: fadeIn 0.6s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📊 仪表板控制台</h1>
+        <p>实时监控系统状态和性能指标</p>
+    </div>
+
+    <div class="container">
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>活跃用户</h3>
+                <div class="value" id="activeUsers">1,248</div>
+                <span class="trend up">↑ 12.5% 本周</span>
+            </div>
+            <div class="stat-card">
+                <h3>系统负载</h3>
+                <div class="value" id="systemLoad">68%</div>
+                <span class="trend down">↓ 3.2% 今日</span>
+            </div>
+            <div class="stat-card">
+                <h3>响应时间</h3>
+                <div class="value" id="responseTime">142ms</div>
+                <span class="trend up">↑ 优化 8%</span>
+            </div>
+            <div class="stat-card">
+                <h3>正常运行时间</h3>
+                <div class="value" id="uptime">99.8%</div>
+                <span class="trend up">↑ 稳定运行</span>
+            </div>
+        </div>
+
+        <div class="content-grid">
+            <div class="main-content">
+                <h2>📈 性能趋势图</h2>
+                <div class="chart-container" id="performanceChart">
+                    <!-- 图表将通过JavaScript生成 -->
+                    <canvas id="chartCanvas"></canvas>
+                </div>
+                
+                <h2 style="margin-top: 40px;">🔔 系统通知</h2>
+                <ul class="activity-list">
+                    <li class="activity-item">
+                        <div class="activity-icon">✅</div>
+                        <div class="activity-details">
+                            <div class="activity-title">系统备份完成</div>
+                            <div class="activity-time">刚刚</div>
+                        </div>
+                    </li>
+                    <li class="activity-item">
+                        <div class="activity-icon">🔄</div>
+                        <div class="activity-details">
+                            <div class="activity-title">数据库优化任务已启动</div>
+                            <div class="activity-time">10分钟前</div>
+                        </div>
+                    </li>
+                    <li class="activity-item">
+                        <div class="activity-icon">👥</div>
+                        <div class="activity-details">
+                            <div class="activity-title">新用户注册：John Doe</div>
+                            <div class="activity-time">30分钟前</div>
+                        </div>
+                    </li>
+                    <li class="activity-item">
+                        <div class="activity-icon">🔧</div>
+                        <div class="activity-details">
+                            <div class="activity-title">安全更新已应用</div>
+                            <div class="activity-time">1小时前</div>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="sidebar">
+                <h2>⚙️ 快速操作</h2>
+                <div style="margin-bottom: 25px;">
+                    <button class="action-btn" onclick="refreshData()">🔄 刷新数据</button>
+                    <button class="action-btn" onclick="generateReport()">📄 生成报告</button>
+                    <button class="action-btn" onclick="showNotification('设置已保存')">💾 保存设置</button>
+                </div>
+
+                <h2>📅 今日计划</h2>
+                <ul class="activity-list">
+                    <li class="activity-item">
+                        <div class="activity-details">
+                            <div class="activity-title">团队会议</div>
+                            <div class="activity-time">14:00 - 15:00</div>
+                        </div>
+                    </li>
+                    <li class="activity-item">
+                        <div class="activity-details">
+                            <div class="activity-title">系统维护窗口</div>
+                            <div class="activity-time">20:00 - 22:00</div>
+                        </div>
+                    </li>
+                </ul>
+
+                <h2 style="margin-top: 30px;">ℹ️ 系统信息</h2>
+                <div style="font-size: 0.9rem; line-height: 1.6;">
+                    <p><strong>应用版本：</strong> v2.1.0</p>
+                    <p><strong>最后更新：</strong> 2025-03-22</p>
+                    <p><strong>运行环境：</strong> WebAppLauncher</p>
+                    <p><strong>数据更新时间：</strong> <span id="updateTime">--:--:--</span></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p>© 2025 仪表板应用 | 运行于 WebAppLauncher 容器 | 右键菜单已禁用</p>
+        <p>当前时间: <span id="currentTime">--:--:--</span></p>
+    </div>
+
+    <div class="notification" id="notification">
+        操作成功！
+    </div>
+
+    <script>
+        // 初始化时间显示
+        function updateTime() {
+            const now = new Date();
+            document.getElementById('currentTime').textContent = 
+                now.toLocaleTimeString('zh-CN');
+            document.getElementById('updateTime').textContent = 
+                now.toLocaleTimeString('zh-CN');
+        }
+        
+        // 更新统计数据
+        function updateStats() {
+            const users = Math.floor(Math.random() * 500) + 1000;
+            const load = Math.floor(Math.random() * 30) + 50;
+            const response = Math.floor(Math.random() * 50) + 100;
+            
+            document.getElementById('activeUsers').textContent = 
+                users.toLocaleString();
+            document.getElementById('systemLoad').textContent = 
+                load + '%';
+            document.getElementById('responseTime').textContent = 
+                response + 'ms';
+        }
+        
+        // 显示通知
+        function showNotification(message) {
+            const notification = document.getElementById('notification');
+            notification.textContent = message;
+            notification.style.display = 'block';
+            
+            setTimeout(() => {
+                notification.style.display = 'none';
+            }, 3000);
+        }
+        
+        // 刷新数据
+        function refreshData() {
+            updateStats();
+            showNotification('数据已刷新');
+        }
+        
+        // 生成报告
+        function generateReport() {
+            showNotification('报告生成中...');
+            setTimeout(() => {
+                showNotification('报告已生成并保存');
+            }, 1500);
+        }
+        
+        // 创建简单图表
+        function createChart() {
+            const canvas = document.getElementById('chartCanvas');
+            if (!canvas.getContext) return;
+            
+            const ctx = canvas.getContext('2d');
+            canvas.width = document.querySelector('.chart-container').offsetWidth;
+            canvas.height = 250;
+            
+            // 绘制简单折线图
+            const data = [65, 59, 80, 81, 56, 55, 70, 75, 80, 85, 90, 88];
+            const labels = ['1月', '2月', '3月', '4月', '5月', '6月', 
+                          '7月', '8月', '9月', '10月', '11月', '12月'];
+            
+            const max = Math.max(...data);
+            const scale = 200 / max;
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // 绘制网格
+            ctx.strokeStyle = '#f0f0f0';
+            ctx.lineWidth = 1;
+            
+            for (let i = 0; i <= 5; i++) {
+                const y = 50 + i * 40;
+                ctx.beginPath();
+                ctx.moveTo(50, y);
+                ctx.lineTo(canvas.width - 30, y);
+                ctx.stroke();
+            }
+            
+            // 绘制折线
+            ctx.strokeStyle = '#667eea';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            
+            data.forEach((value, index) => {
+                const x = 50 + index * (canvas.width - 80) / (data.length - 1);
+                const y = 250 - value * scale;
+                
+                if (index === 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+                
+                // 绘制数据点
+                ctx.fillStyle = '#667eea';
+                ctx.beginPath();
+                ctx.arc(x, y, 5, 0, Math.PI * 2);
+                ctx.fill();
+            });
+            
+            ctx.stroke();
+            
+            // 绘制标签
+            ctx.fillStyle = '#666';
+            ctx.font = '12px Microsoft YaHei';
+            ctx.textAlign = 'center';
+            
+            labels.forEach((label, index) => {
+                const x = 50 + index * (canvas.width - 80) / (data.length - 1);
+                ctx.fillText(label, x, 270);
+            });
+        }
+        
+        // 初始化
+        function init() {
+            updateTime();
+            updateStats();
+            createChart();
+            
+            // 每秒更新时间
+            setInterval(updateTime, 1000);
+            
+            // 每30秒更新数据
+            setInterval(updateStats, 30000);
+            
+            // 每5分钟重新绘制图表
+            setInterval(createChart, 300000);
+            
+            // 发送加载完成消息
+            if (window.chrome && window.chrome.webview) {
+                window.chrome.webview.postMessage('仪表板应用已加载');
+            }
+        }
+        
+        // 页面加载完成后初始化
+        window.addEventListener('load', init);
+        
+        // 添加按钮样式
+        const style = document.createElement('style');
+        style.textContent = `
+            .action-btn {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+                padding: 12px 20px;
+                border-radius: 8px;
+                font-size: 14px;
+                cursor: pointer;
+                margin: 5px;
+                transition: transform 0.2s, box-shadow 0.2s;
+                width: 100%;
+            }
+            
+            .action-btn:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 6px 15px rgba(102, 126, 234, 0.3);
+            }
+            
+            .action-btn:active {
+                transform: translateY(0);
+            }
+        `;
+        document.head.appendChild(style);
+    </script>
+</body>
+</html>

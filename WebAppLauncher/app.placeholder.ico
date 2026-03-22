@@ -1,0 +1,23 @@
+这是一个图标占位符文件。
+
+实际项目中，您需要：
+1. 使用专业的图标编辑工具创建 .ico 文件
+2. 或者使用在线工具转换PNG为ICO
+3. 将生成的 app.ico 文件放在此目录
+
+已提供的工具：
+1. create_icon.bat - 使用ImageMagick生成图标
+2. IconGenerator.cs - C#图标生成示例
+3. icon_instructions.md - 详细创建说明
+
+快速创建步骤：
+1. 安装 ImageMagick (https://imagemagick.org/)
+2. 运行 create_icon.bat
+3. 或者手动创建 16x16, 32x32, 48x48, 64x64, 128x128, 256x256 的PNG图片
+4. 使用在线工具转换为ICO格式
+
+图标设计建议：
+- 主色: #4361ee (蓝色)
+- 辅色: #4cc9f0 (青色)
+- 文字: "W" 或 "Web" 或浏览器图标
+- 风格: 现代、简洁、专业
