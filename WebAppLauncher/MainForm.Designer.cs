@@ -28,6 +28,7 @@ namespace WebAppLauncher
         /// </summary>
         private void InitializeComponent()
         {
+            System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(MainForm));
             SuspendLayout();
             // 
             // MainForm
@@ -35,6 +36,7 @@ namespace WebAppLauncher
             AutoScaleDimensions = new SizeF(7F, 17F);
             AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(1200, 800);
+            Icon = (Icon)resources.GetObject("$this.Icon");
             Name = "MainForm";
             Text = "Web应用启动器";
             ResumeLayout(false);

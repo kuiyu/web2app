@@ -17,6 +17,10 @@ namespace WebAppLauncher
         private ToolStripMenuItem _appMenu;
         private ToolStripMenuItem _toolsMenu;
         private ToolStripMenuItem _helpMenu;
+        private System.Windows.Forms.Timer? _mouseCheckTimer;
+        private bool _menuVisible;
+        private const int MENU_TRIGGER_HEIGHT = 50; // 顶部50像素区域触发显示
+        private const int MOUSE_CHECK_INTERVAL = 100; // 每100ms检查一次鼠标位置
 
         public MainForm()
         {
@@ -27,10 +31,15 @@ namespace WebAppLauncher
             _appRunner = new AppRunnerService();
             _appBasePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory);
             
-            // 创建菜单栏（必须先创建和添加）
-            CreateMenuStrip();
+            // 不再需要隐藏菜单计时器（立即隐藏）
             
-            // 创建内容Panel作为WebView2的容器
+            // 初始化鼠标检查计时器
+            _mouseCheckTimer = new System.Windows.Forms.Timer();
+            _mouseCheckTimer.Interval = MOUSE_CHECK_INTERVAL;
+            _mouseCheckTimer.Tick += MouseCheckTimer_Tick;
+            _mouseCheckTimer.Start();
+            
+            // 先创建内容Panel作为WebView2的容器（占满整个窗体）
             var contentPanel = new Panel
             {
                 Dock = DockStyle.Fill
@@ -46,9 +55,16 @@ namespace WebAppLauncher
             // 将WebView2添加到内容Panel
             contentPanel.Controls.Add(_webView);
             
-            // 将内容Panel添加到窗体
-            // 注意：菜单栏已经添加，内容Panel会自动填充剩余空间
+            // 添加内容Panel（占满整个窗体）
             Controls.Add(contentPanel);
+            
+            // 再创建并添加菜单栏（当显示时在最上层）
+            CreateMenuStrip();
+            _menuVisible = false;
+            _menuStrip.Visible = false;
+            
+            // 确保菜单栏在Z-Order的最上层
+            _menuStrip.BringToFront();
             
             // 初始化WebView2
             InitializeWebViewAsync();
@@ -294,17 +310,13 @@ namespace WebAppLauncher
             
             try
             {
-                // 等待页面完全加载
-                await Task.Delay(1000);
-                
-                Console.WriteLine("导航完成，开始应用自适应缩放...");
-                
-                        // 恢复原始滚动条（移除缩放）
-                        await RestoreOriginalScrollbars();
+                await Task.Delay(100);
+                Console.WriteLine("导航完成，恢复WebView原始滚动行为...");
+                await RestoreWebViewNativeBehavior();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"应用自适应缩放时出错: {ex.Message}");
+                Console.WriteLine($"恢复WebView原始行为时出错: {ex.Message}");
             }
         }
 
@@ -462,16 +474,8 @@ namespace WebAppLauncher
 
         private void OnFormResize(object? sender, EventArgs e)
         {
-                // 窗体大小变化时，重新应用恢复滚动条
-                if (_webView.CoreWebView2 != null && _webView.Visible)
-                {
-                    // 延迟执行，避免频繁重绘
-                    _ = Task.Run(async () =>
-                    {
-                        await Task.Delay(300); // 延迟300ms，避免频繁调整
-                        await RestoreOriginalScrollbars();
-                    });
-                }
+            // 窗体大小变化时，WebView会自动调整，不需要额外处理
+            // 保持像浏览器一样的原生行为
         }
 
         private async Task ApplyResponsiveAutoZoom()
@@ -678,6 +682,86 @@ namespace WebAppLauncher
             }
         }
 
+        private async Task RestoreWebViewNativeBehavior()
+        {
+            try
+            {
+                if (_webView.CoreWebView2 == null)
+                    return;
+
+                var restoreJs = @"
+                    (function() {
+                        try {
+                            // 移除所有自定义样式
+                            var stylesToRemove = [
+                                'webapplauncher-autozoom-style',
+                                'webapplauncher-responsive-style',
+                                'webapplauncher-zoom-container',
+                                'webapplauncher-responsive-container'
+                            ];
+                            
+                            stylesToRemove.forEach(function(id) {
+                                var element = document.getElementById(id);
+                                if (element) {
+                                    element.parentNode.removeChild(element);
+                                }
+                            });
+                            
+                            // 重置html和body的样式
+                            var html = document.documentElement;
+                            var body = document.body;
+                            
+                            // 重置html样式
+                            html.style.overflow = '';
+                            html.style.width = '';
+                            html.style.height = '';
+                            html.style.margin = '';
+                            html.style.padding = '';
+                            
+                            // 重置body样式
+                            body.style.transform = '';
+                            body.style.transformOrigin = '';
+                            body.style.width = '';
+                            body.style.height = '';
+                            body.style.position = '';
+                            body.style.overflow = '';
+                            body.style.margin = '';
+                            body.style.padding = '';
+                            
+                            // 恢复滚动条
+                            var restoreScrollStyle = document.createElement('style');
+                            restoreScrollStyle.textContent = `
+                                html, body {
+                                    overflow: auto !important;
+                                }
+                                * {
+                                    scrollbar-width: auto !important;
+                                    -ms-overflow-style: auto !important;
+                                }
+                                *::-webkit-scrollbar {
+                                    display: block !important;
+                                }
+                            `;
+                            document.head.appendChild(restoreScrollStyle);
+                            
+                            console.log('WebView原生行为已恢复');
+                            return 'native_behavior_restored';
+                        } catch(e) {
+                            console.error('恢复WebView原生行为时出错:', e);
+                            return 'error: ' + e.message;
+                        }
+                    })();
+                ";
+
+                var result = await _webView.CoreWebView2.ExecuteScriptAsync(restoreJs);
+                Console.WriteLine($"WebView原生行为恢复完成: {result}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"恢复WebView原生行为时出错: {ex.Message}");
+            }
+        }
+
         private async Task RestoreOriginalScrollbars()
         {
             try
@@ -876,6 +960,9 @@ namespace WebAppLauncher
         {
             _menuStrip = new MenuStrip();
             
+            // 不使用Dock，而是手动设置位置和大小
+            _menuStrip.Location = new Point(0, 0);
+            
             // 文件菜单
             _fileMenu = new ToolStripMenuItem("文件(&F)");
             _fileMenu.DropDownItems.Add("刷新应用(&R)", null, (s, e) => LoadCurrentApp());
@@ -902,8 +989,61 @@ namespace WebAppLauncher
             
             _menuStrip.Items.AddRange(new ToolStripItem[] { _fileMenu, _appMenu, _toolsMenu, _helpMenu });
             
+            // 监听菜单的鼠标移动事件，保持菜单显示
+            _menuStrip.MouseMove += MenuStrip_MouseMove;
+            
+            // 添加菜单栏
             Controls.Add(_menuStrip);
             MainMenuStrip = _menuStrip;
+            
+            // 确保菜单栏在Z-Order的最上层
+            _menuStrip.BringToFront();
+        }
+
+        private void MenuStrip_MouseMove(object? sender, MouseEventArgs e)
+        {
+            // 鼠标在菜单上移动，保持菜单显示
+            if (_menuVisible)
+            {
+                ResetHideTimer();
+            }
+        }
+
+        private void MouseCheckTimer_Tick(object? sender, EventArgs e)
+        {
+            try
+            {
+                // 检查鼠标是否在窗体范围内
+                if (this.Bounds.Contains(Cursor.Position))
+                {
+                    var mousePos = PointToClient(Cursor.Position);
+                    
+                    // 检查鼠标是否在顶部触发区域
+                    bool mouseInTopArea = mousePos.Y <= MENU_TRIGGER_HEIGHT;
+                    // 检查鼠标是否在菜单区域
+                    bool mouseInMenuArea = _menuVisible && _menuStrip.Bounds.Contains(mousePos);
+                    
+                    if (mouseInTopArea || mouseInMenuArea)
+                    {
+                        // 鼠标在顶部或菜单区域，显示菜单
+                        ShowMenu();
+                    }
+                    else if (_menuVisible)
+                    {
+                        // 鼠标不在任何相关区域，立即隐藏菜单
+                        HideMenu();
+                    }
+                }
+                else if (_menuVisible)
+                {
+                    // 鼠标不在窗体范围内，立即隐藏菜单
+                    HideMenu();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"检查鼠标位置时出错: {ex.Message}");
+            }
         }
         
         private void UpdateAppMenuItems()
@@ -1222,9 +1362,51 @@ WebAppLauncher v1.0
             }
         }
 
+        private void MainForm_MouseMove(object? sender, MouseEventArgs e)
+        {
+            // 不再需要窗体级别的鼠标移动检测（由计时器处理）
+        }
+
+        private void ShowMenu()
+        {
+            if (!_menuVisible)
+            {
+                _menuVisible = true;
+                _menuStrip.Visible = true;
+                _menuStrip.BringToFront();
+                Console.WriteLine("菜单已显示");
+            }
+        }
+
+        private void ResetHideTimer()
+        {
+            // 不再需要重置隐藏计时器
+        }
+
+        private void HideMenuTimer_Tick(object? sender, EventArgs e)
+        {
+            // 不再使用隐藏计时器
+        }
+
+        private void HideMenu()
+        {
+            if (_menuVisible)
+            {
+                _menuVisible = false;
+                _menuStrip.Visible = false;
+                Console.WriteLine("菜单已隐藏");
+            }
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             base.OnFormClosing(e);
+            // 清理鼠标检查计时器
+            if (_mouseCheckTimer != null)
+            {
+                _mouseCheckTimer.Stop();
+                _mouseCheckTimer.Dispose();
+            }
             // 清理WebView2资源
             _webView?.Dispose();
         }
