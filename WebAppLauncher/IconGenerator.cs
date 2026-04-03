@@ -1,3 +1,8 @@
+/*
+ * 名称：web应用容器
+ * 功能：用程序打开本地网页，vue页面，网站
+ * 作者微信：runsoft1024
+ */
 using System;
 using System.Drawing;
 using System.Drawing.Imaging;

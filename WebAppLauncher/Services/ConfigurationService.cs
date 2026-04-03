@@ -1,3 +1,8 @@
+/*
+ * 名称：web应用容器
+ * 功能：用程序打开本地网页，vue页面，网站
+ * 作者微信：runsoft1024
+ */
 using Microsoft.Extensions.Configuration;
 using WebAppLauncher.Models;
 
@@ -26,27 +31,9 @@ namespace WebAppLauncher.Services
             try
             {
                 var webAppSection = _configuration.GetSection("WebAppSettings");
-                if (webAppSection.Exists())
-                {
-                    settings.WebAppSettings.CurrentApp = webAppSection["CurrentApp"] ?? "app1";
-                    
-                    var appsSection = webAppSection.GetSection("Apps");
-                    if (appsSection.Exists())
-                    {
-                        foreach (var app in appsSection.GetChildren())
-                        {
-                            var appConfig = new WebAppConfig
-                            {
-                                Name = app["Name"] ?? app.Key,
-                                Path = app["Path"] ?? string.Empty,
-                                Title = app["Title"] ?? app.Key,
-                                Run = app["Run"]??app.Key
-                            };
-                            settings.WebAppSettings.Apps[app.Key] = appConfig;
-                        }
-                    }
-                }
-
+                var apps = _configuration.GetSection("WebAppSettings:Apps");
+                settings.WebAppSettings.Apps = apps.Get<WebAppConfig[]>();
+                settings.WebAppSettings.CurrentApp = webAppSection.GetValue<string>("CurrentApp");
                 var windowSection = _configuration.GetSection("WindowSettings");
                 if (windowSection.Exists())
                 {
@@ -73,11 +60,8 @@ namespace WebAppLauncher.Services
         public WebAppConfig? GetCurrentAppConfig()
         {
             var settings = GetAppSettings();
-            if (settings.WebAppSettings.Apps.TryGetValue(settings.WebAppSettings.CurrentApp, out var appConfig))
-            {
+            var appConfig = settings.WebAppSettings.Apps.FirstOrDefault(x => x.AppId == settings.WebAppSettings.CurrentApp);
                 return appConfig;
-            }
-            return null;
         }
 
         public void UpdateCurrentApp(string appId)
@@ -88,7 +72,7 @@ namespace WebAppLauncher.Services
                 var appSettings = GetAppSettings();
                 
                 // 验证要切换的应用是否存在
-                if (!appSettings.WebAppSettings.Apps.ContainsKey(appId))
+                if (!appSettings.WebAppSettings.Apps.Any(x=>x.Name==appId))
                 {
                     throw new ArgumentException($"应用 '{appId}' 不存在于配置中");
                 }
@@ -125,12 +109,14 @@ namespace WebAppLauncher.Services
                     {
                         CurrentApp = appSettings.WebAppSettings.CurrentApp,
                         Apps = appSettings.WebAppSettings.Apps.ToDictionary(
-                            kvp => kvp.Key,
+                         
                             kvp => new
                             {
-                                Name = kvp.Value.Name,
-                                Path = kvp.Value.Path,
-                                Title = kvp.Value.Title
+                                AppId=kvp.AppId,
+                                Name = kvp.Name,
+                                Path = kvp.Path,
+                                Title = kvp.Title,
+                                Run=kvp.Run
                             }
                         )
                     },

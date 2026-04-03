@@ -12,6 +12,7 @@
 - ✅ **WebView2集成**：使用Microsoft Edge WebView2控件提供现代化的Web渲染
 - ✅ **右键菜单禁用**：彻底禁用WebView2和窗体的右键菜单功能
 - ✅ **应用切换**：运行时可通过菜单切换不同的Web应用
+- ✅ **http应用**：为需要http服务的应用，提供http服务支持
 
 ### 管理功能
 - ✅ **应用状态监控**：检查各个Web应用的可用性
@@ -55,27 +56,44 @@ f:\work\webapp\
 ```json
 {
   "WebAppSettings": {
-    "CurrentApp": "app1",                // 当前运行的应用ID
-    "Apps": {                           // 应用配置
-      "app1": {
-        "Name": "示例应用1",             // 应用显示名称
-        "Path": "apps/app1/index.html", // 应用文件路径
-        "Title": "我的Web应用1" ,        // 窗口标题
-        "Run": "" //该应用启动时要打开的应用程序  
+    "CurrentApp": "app3",
+    "Apps": [
+      {
+        "AppId": "app1",
+        "Name": "示例应用1",
+        "Path": "apps/app1/index.html",
+        "Title": "我的Web应用1",
+        "Run": "http://localhost:63000/index.html"
       },
-      "app2": {
+      {
+        "AppId": "app2",
         "Name": "示例应用2",
         "Path": "apps/app2/index.html",
         "Title": "我的Web应用2",
-        "Run": "" //该应用启动时要打开的应用程序  
+        "Run": "cmd.exe /k echo Hello World"
+      },
+      {
+        "AppId": "app3",
+        "Name": "vue应用",
+        "Path": "apps/vue/index.html",
+        "Title": "vue项目应用",
+        "Run": "http://localhost:63000/index.html"
+      },
+
+      {
+        "AppId": "app4",
+        "Name": "示例应用4",
+        "Path": "https://www.deepseek.com",
+        "Title": "我的Web应用4",
+        "Run": "explorer.exe"
       }
-    }
+    ]
   },
   "WindowSettings": {
-    "Width": 1200,                      // 窗口宽度
-    "Height": 800,                      // 窗口高度
-    "StartPosition": "CenterScreen",    // 启动位置
-    "DisableContextMenu": true          // 是否禁用右键菜单
+    "Width": 1200,
+    "Height": 800,
+    "StartPosition": "CenterScreen",
+    "DisableContextMenu": true
   }
 }
 ```
@@ -84,22 +102,31 @@ f:\work\webapp\
 
 ### 1. 运行应用
 1. 使用Visual Studio 2022或更高版本打开解决方案
+
 2. 确保已安装.NET 8.0 SDK
+
 3. 编译并运行项目
+
+   或者直接下载己发布的版本
 
 ### 2. 添加新的Web应用
 1. 在`WebAppLauncher/apps/`目录下创建新的文件夹（如`myapp`）
 2. 在文件夹中创建`index.html`或其他Web文件
 3. 在`appsettings.json`的`Apps`部分添加新应用配置：
 ```json
-"myapp": {
-  "Name": "我的应用",
-  "Path": "apps/myapp/index.html",
-  "Title": "我的自定义应用"
-}
+ {
+    "AppId": "app3",
+    "Name": "vue应用",
+    "Path": "apps/vue/index.html",
+    "Title": "vue项目应用",
+    "Run": "http://localhost:63000/index.html"  
+  }
 ```
 
+如果你的项目是vue编译后的项目，它需要挂载http服务，可以将Run字段写成“http://localhost:63000”，这样就可以直接访问vue项目了
+
 ### 3. 切换当前应用
+
 1. 修改`appsettings.json`中的`CurrentApp`值为目标应用ID
 2. 重启应用程序
 3. 或者通过应用菜单动态切换（如果应用已配置）

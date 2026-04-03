@@ -1,7 +1,15 @@
+/*
+ * 名称：web应用容器
+ * 功能：用程序打开本地网页，vue页面，网站
+ * 作者微信：runsoft1024
+ */
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Sockets;
 using System.Threading.Tasks;
 using WebAppLauncher.Models;
 
@@ -11,6 +19,7 @@ namespace WebAppLauncher.Services
     {
         private readonly ConfigurationService _configService;
         private readonly string _appBasePath;
+        private readonly Dictionary<string, Process> _runningAspNetCoreProcesses = new Dictionary<string, Process>();
 
         public AppRunnerService()
         {
@@ -47,7 +56,7 @@ namespace WebAppLauncher.Services
                 int successCount = 0;
                 foreach (var programPath in programPaths)
                 {
-                    if (await RunProgramAsync(programPath))
+                    if (await RunProgramAsync(programPath, appId, appConfig.Path))
                     {
                         successCount++;
                     }
@@ -78,11 +87,8 @@ namespace WebAppLauncher.Services
         private WebAppConfig? GetAppConfig(string appId)
         {
             var settings = _configService.GetAppSettings();
-            if (settings.WebAppSettings.Apps.TryGetValue(appId, out var appConfig))
-            {
-                return appConfig;
-            }
-            return null;
+            var appConfig = settings.WebAppSettings.Apps.FirstOrDefault(x => x.AppId == appId);
+            return appConfig;
         }
 
         /// <summary>
@@ -103,10 +109,18 @@ namespace WebAppLauncher.Services
         /// <summary>
         /// 运行单个程序
         /// </summary>
-        private async Task<bool> RunProgramAsync(string programPath)
+        private async Task<bool> RunProgramAsync(string programPath, string appId, string appPath)
         {
             try
             {
+                // 检查是否是ASP.NET Core程序（http://localhost开头）
+                if (IsAspNetCoreLocalhostUrl(programPath))
+                {
+                     await RunAspNetCoreAppAsync(programPath, appId, appPath);
+
+                    return true;
+                }
+
                 // 处理路径
                 string fullPath = ResolveProgramPath(programPath);
                 
@@ -237,6 +251,286 @@ namespace WebAppLauncher.Services
         }
 
         /// <summary>
+        /// 检查是否是ASP.NET Core本地主机URL
+        /// </summary>
+        private bool IsAspNetCoreLocalhostUrl(string programPath)
+        {
+            return !string.IsNullOrWhiteSpace(programPath) && 
+                   (programPath.StartsWith("http://localhost:", StringComparison.OrdinalIgnoreCase) || 
+                    programPath.StartsWith("https://localhost:", StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// 运行ASP.NET Core应用
+        /// </summary>
+        private async Task RunAspNetCoreAppAsync(string localhostUrl, string appId, string appPath)
+        {
+            try
+            {
+                Console.WriteLine($"启动ASP.NET Core应用: {localhostUrl}, 应用ID: {appId}, 静态文件路径: {appPath}");
+
+                // 检查端口是否已经在使用
+                if (IsPortInUse(localhostUrl))
+                {
+                    Console.WriteLine($"端口已在使用: {localhostUrl}");
+                    return ; // 端口已在使用，认为启动成功
+                }
+
+                // 解析端口号
+                var uri = new Uri(localhostUrl);
+                var port = uri.Port;
+
+                // 确定静态文件目录
+                var wwwRootPath = ResolveStaticFileDirectory(appPath);
+                if (string.IsNullOrEmpty(wwwRootPath) || !Directory.Exists(wwwRootPath))
+                {
+                    Console.WriteLine($"静态文件目录不存在: {wwwRootPath}");
+                    return ;
+                }
+
+                Console.WriteLine($"静态文件目录: {wwwRootPath}");
+
+                //启动web
+               Program.WebServer =new EmbeddedWebServer(wwwRootPath, port);
+                await Program.WebServer.StartAsync();
+
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"启动ASP.NET Core应用时出错: {ex.Message}");
+                return ;
+            }
+        }
+
+        /// <summary>
+        /// 解析静态文件目录
+        /// </summary>
+        private string ResolveStaticFileDirectory(string appPath)
+        {
+            if (string.IsNullOrWhiteSpace(appPath))
+                return string.Empty;
+
+            // 如果是URL，返回空
+            if (PathHelper.IsUrl(appPath))
+                return string.Empty;
+
+            // 如果是相对路径，转换为绝对路径
+            if (!Path.IsPathRooted(appPath))
+            {
+                string fullPath;
+                
+                // 检查appPath是否已经以"apps/"开头
+                if (appPath.StartsWith("apps/", StringComparison.OrdinalIgnoreCase) || 
+                    appPath.StartsWith("apps\\", StringComparison.OrdinalIgnoreCase))
+                {
+                    // 如果已经以"apps/"开头，直接使用_appBasePath作为基础路径
+                    fullPath = Path.Combine(_appBasePath, appPath.Replace('/', '\\'));
+                }
+                else
+                {
+                    // 否则，添加"apps"目录
+                    var appsBasePath = Path.Combine(_appBasePath, "apps");
+                    fullPath = Path.Combine(appsBasePath, appPath.Replace('/', '\\'));
+                }
+                
+                Console.WriteLine($"解析静态文件路径: {appPath} -> {fullPath}");
+                
+                // 如果路径是文件，返回文件所在目录
+                if (File.Exists(fullPath))
+                {
+                    var dirPath = Path.GetDirectoryName(fullPath) ?? string.Empty;
+                    Console.WriteLine($"路径是文件，返回目录: {dirPath}");
+                    return dirPath;
+                }
+                
+                // 如果路径是目录，直接返回
+                if (Directory.Exists(fullPath))
+                {
+                    Console.WriteLine($"路径是目录，直接返回: {fullPath}");
+                    return fullPath;
+                }
+                
+                // 如果文件和目录都不存在，尝试查找最近的存在的目录
+                var currentPath = fullPath;
+                while (!Directory.Exists(currentPath) && !string.IsNullOrEmpty(currentPath))
+                {
+                    currentPath = Path.GetDirectoryName(currentPath);
+                }
+                
+                if (!string.IsNullOrEmpty(currentPath) && Directory.Exists(currentPath))
+                {
+                    Console.WriteLine($"找到最近的存在目录: {currentPath}");
+                    return currentPath;
+                }
+            }
+            else
+            {
+                // 绝对路径
+                if (File.Exists(appPath))
+                {
+                    return Path.GetDirectoryName(appPath) ?? string.Empty;
+                }
+                
+                if (Directory.Exists(appPath))
+                {
+                    return appPath;
+                }
+            }
+
+            Console.WriteLine($"无法解析静态文件目录: {appPath}");
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// 检查端口是否在使用
+        /// </summary>
+        private bool IsPortInUse(string url)
+        {
+            try
+            {
+                var uri = new Uri(url);
+                var port = uri.Port;
+
+                // 尝试绑定端口，如果成功则端口未被使用，否则端口已被使用
+                using (var listener = new TcpListener(IPAddress.Loopback, port))
+                {
+                    try
+                    {
+                        listener.Start();
+                        // 端口未被使用
+                        return false;
+                    }
+                    catch (SocketException)
+                    {
+                        // 端口已被使用
+                        return true;
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            listener.Stop();
+                        }
+                        catch
+                        {
+                            // 忽略关闭时的异常
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // 发生异常，认为端口已被使用
+                return true;
+            }
+        }
+        private bool StartWeb(string url)
+        {
+            try
+            {
+                var uri = new Uri(url);
+                var port = uri.Port;
+
+                // 尝试绑定端口，如果成功则端口未被使用，否则端口已被使用
+                using (var listener = new TcpListener(IPAddress.Loopback, port))
+                {
+                    try
+                    {
+                        listener.Start();
+                        // 端口未被使用，说明ASP.NET Core应用没有成功启动
+                        return false;
+                    }
+                    catch (SocketException)
+                    {
+                        // 端口已被使用，说明ASP.NET Core应用成功启动
+                        return true;
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            listener.Stop();
+                        }
+                        catch
+                        {
+                            // 忽略关闭时的异常
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // 发生异常，认为ASP.NET Core应用成功启动
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// 读取进程输出
+        /// </summary>
+        private async Task ReadProcessOutput(Process process, string url)
+        {
+            try
+            {
+                while (!process.StandardOutput.EndOfStream)
+                {
+                    var line = await process.StandardOutput.ReadLineAsync();
+                    if (!string.IsNullOrEmpty(line))
+                    {
+                        Console.WriteLine($"[ASP.NET Core] {line}");
+                    }
+                }
+
+                while (!process.StandardError.EndOfStream)
+                {
+                    var line = await process.StandardError.ReadLineAsync();
+                    if (!string.IsNullOrEmpty(line))
+                    {
+                        Console.WriteLine($"[ASP.NET Core Error] {line}");
+                    }
+                }
+
+                // 进程退出
+                process.WaitForExit();
+                Console.WriteLine($"ASP.NET Core应用退出: {url}, 退出代码: {process.ExitCode}");
+                _runningAspNetCoreProcesses.Remove(url);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"读取ASP.NET Core进程输出时出错: {ex.Message}");
+                _runningAspNetCoreProcesses.Remove(url);
+            }
+        }
+
+        /// <summary>
+        /// 关闭所有ASP.NET Core进程
+        /// </summary>
+        public void StopAllAspNetCoreProcesses()
+        {
+            var processesToStop = _runningAspNetCoreProcesses.ToList();
+            foreach (var (url, process) in processesToStop)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        Console.WriteLine($"关闭ASP.NET Core应用: {url}, 进程ID: {process.Id}");
+                        process.Kill();
+                        process.WaitForExit(2000);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"关闭ASP.NET Core应用时出错: {ex.Message}");
+                }
+                finally
+                {
+                    _runningAspNetCoreProcesses.Remove(url);
+                }
+            }
+        }
+
+        /// <summary>
         /// 验证Run字段配置
         /// </summary>
         public string ValidateRunConfig(string appId)
@@ -259,17 +553,26 @@ namespace WebAppLauncher.Services
             for (int i = 0; i < programPaths.Length; i++)
             {
                 var path = programPaths[i];
-                var resolvedPath = ResolveProgramPath(path);
                 
-                if (string.IsNullOrEmpty(resolvedPath) || 
-                    (!File.Exists(resolvedPath) && !Directory.Exists(resolvedPath)))
+                // 检查是否是ASP.NET Core本地主机URL
+                if (IsAspNetCoreLocalhostUrl(path))
                 {
-                    results.AppendLine($"  [{i + 1}] ❌ {path} (未找到)");
+                    results.AppendLine($"  [{i + 1}] ✅ {path} (ASP.NET Core应用)");
                 }
                 else
                 {
-                    var exists = File.Exists(resolvedPath) ? "文件" : "目录";
-                    results.AppendLine($"  [{i + 1}] ✅ {path} -> {resolvedPath} ({exists})");
+                    var resolvedPath = ResolveProgramPath(path);
+                    
+                    if (string.IsNullOrEmpty(resolvedPath) || 
+                        (!File.Exists(resolvedPath) && !Directory.Exists(resolvedPath)))
+                    {
+                        results.AppendLine($"  [{i + 1}] ❌ {path} (未找到)");
+                    }
+                    else
+                    {
+                        var exists = File.Exists(resolvedPath) ? "文件" : "目录";
+                        results.AppendLine($"  [{i + 1}] ✅ {path} -> {resolvedPath} ({exists})");
+                    }
                 }
             }
 

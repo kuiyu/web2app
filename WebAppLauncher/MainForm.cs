@@ -1,3 +1,8 @@
+/*
+ * 名称：web应用容器
+ * 功能：用程序打开本地网页，vue页面，网站
+ * 作者微信：runsoft1024
+ */
 using Microsoft.Web.WebView2.WinForms;
 using WebAppLauncher.Models;
 using WebAppLauncher.Services;
@@ -250,7 +255,7 @@ namespace WebAppLauncher
         private async void LoadAppById(string appId)
         {
             var appConfig = _configService.GetAppSettings().WebAppSettings.Apps
-                .FirstOrDefault(kvp => kvp.Key == appId).Value;
+                .FirstOrDefault(kvp => kvp.AppId == appId);
             
             if (appConfig != null)
             {
@@ -261,6 +266,8 @@ namespace WebAppLauncher
                 
                 try
                 {
+                
+                    
                     // 使用PathHelper构建合适的Uri
                     var uri = PathHelper.BuildUri(_appBasePath, appConfig.Path);
                     _webView.Source = uri;
@@ -273,6 +280,20 @@ namespace WebAppLauncher
                             var successCount = await _appRunner.RunAppsForCurrentApp(appId);
                             if (successCount > 0)
                             {
+                                if(appConfig.Run.StartsWith("http://localhost"))
+                                {
+                                    if(_webView.InvokeRequired)
+                                    {
+                                        _webView.Invoke(new Action(() =>
+                                        {
+                                            _webView.Source = new Uri(appConfig.Run);
+                                        }));
+                                    }else
+                                    {
+                                        _webView.Source = new Uri(appConfig.Run);
+                                    }
+                                    
+                                }
                                 Console.WriteLine($"应用 '{appId}' 的Run字段程序启动完成");
                             }
                         }
@@ -1198,7 +1219,7 @@ namespace WebAppLauncher
                 
                 foreach (var app in settings.WebAppSettings.Apps)
                 {
-                    var validationResult = _appRunner.ValidateRunConfig(app.Key);
+                    var validationResult = _appRunner.ValidateRunConfig(app.AppId);
                     message.AppendLine(validationResult);
                     message.AppendLine();
                 }

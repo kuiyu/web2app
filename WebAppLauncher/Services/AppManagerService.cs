@@ -1,3 +1,8 @@
+/*
+ * 名称：web应用容器
+ * 功能：用程序打开本地网页，vue页面，网站
+ * 作者微信：runsoft1024
+ */
 using WebAppLauncher.Models;
 
 namespace WebAppLauncher.Services
@@ -20,16 +25,16 @@ namespace WebAppLauncher.Services
 
             foreach (var appConfig in settings.WebAppSettings.Apps)
             {
-                var isUrl = PathHelper.IsUrl(appConfig.Value.Path);
-                var isAvailable = PathHelper.IsPathAvailable(_appsBasePath, appConfig.Value.Path);
-                var displayPath = isUrl ? appConfig.Value.Path : Path.Combine(_appsBasePath, appConfig.Value.Path);
+                var isUrl = PathHelper.IsUrl(appConfig.Path);
+                var isAvailable = PathHelper.IsPathAvailable(_appsBasePath, appConfig.Path);
+                var displayPath = isUrl ? appConfig.Path : Path.Combine(_appsBasePath, appConfig.Path);
                 
                 apps.Add(new WebAppInfo
                 {
-                    Id = appConfig.Key,
-                    Name = appConfig.Value.Name,
-                    Path = appConfig.Value.Path,
-                    Title = appConfig.Value.Title,
+                    Id = appConfig.AppId,
+                    Name = appConfig.Name,
+                    Path = appConfig.Path,
+                    Title = appConfig.Title,
                     IsAvailable = isAvailable,
                     FullPath = displayPath,
                     IsUrl = isUrl
@@ -45,7 +50,7 @@ namespace WebAppLauncher.Services
             {
                 var settings = _configService.GetAppSettings();
                 
-                if (!settings.WebAppSettings.Apps.ContainsKey(appId))
+                if (!settings.WebAppSettings.Apps.Any(x=>x.AppId==appId))
                 {
                     return false;
                 }
@@ -64,8 +69,8 @@ namespace WebAppLauncher.Services
         public string? GetAppPath(string appId)
         {
             var settings = _configService.GetAppSettings();
-            
-            if (settings.WebAppSettings.Apps.TryGetValue(appId, out var appConfig))
+            var appConfig= settings.WebAppSettings.Apps.FirstOrDefault(x => x.AppId == appId);
+            if (appConfig!=null)
             {
                 // 如果是网址，直接返回网址
                 if (PathHelper.IsUrl(appConfig.Path))
@@ -84,7 +89,8 @@ namespace WebAppLauncher.Services
         {
             var settings = _configService.GetAppSettings();
             
-            if (settings.WebAppSettings.Apps.TryGetValue(appId, out var appConfig))
+            var appConfig= settings.WebAppSettings.Apps.FirstOrDefault(x=>x.AppId == appId);
+            if (appConfig!=null)
             {
                 return PathHelper.IsPathAvailable(_appsBasePath, appConfig.Path);
             }

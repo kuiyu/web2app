@@ -1,42 +1,59 @@
+/*
+ * 名称：web应用容器
+ * 功能：用程序打开本地网页，vue页面，网站
+ * 作者微信：runsoft1024
+ */
+using System.Threading.Tasks;
+using WebAppLauncher.Services;
+
 namespace WebAppLauncher
 {
     internal static class Program
     {
+        public static EmbeddedWebServer WebServer { get; set; }
         /// <summary>
         ///  The main entry point for the application.
         /// </summary>
         [STAThread]
-        static void Main()
+        static void  Main()
         {
             // 检查是否以测试模式运行
             var args = Environment.GetCommandLineArgs();
             bool testMode = args.Contains("--test") || args.Contains("-t");
-            
+
             if (testMode)
             {
                 RunTests();
                 return;
             }
-            
+
             // 设置应用程序域异常处理
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += Application_ThreadException;
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
-            
+
             // 启用Windows Forms视觉样式
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            
+
             try
             {
                 Application.Run(new MainForm());
+
             }
             catch (Exception ex)
             {
                 HandleFatalException(ex);
             }
+            finally
+            {
+                // 确保在应用程序退出时停止Web服务器
+                if (WebServer != null)
+                {
+                    WebServer.StopAsync().Wait();
+                }
+            }
         }
-        
         private static void RunTests()
         {
             Console.WriteLine("WebAppLauncher 测试模式");
