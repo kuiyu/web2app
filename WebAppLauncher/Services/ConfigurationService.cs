@@ -30,9 +30,19 @@ namespace WebAppLauncher.Services
             
             try
             {
+                var webAppSettings = _configuration.GetSection("WebAppSettings").Get<WebAppSettings>();
+                if(webAppSettings!=null)
+                {
+                    settings.WebAppSettings = webAppSettings;
+                }
                 var webAppSection = _configuration.GetSection("WebAppSettings");
-                var apps = _configuration.GetSection("WebAppSettings:Apps");
-                settings.WebAppSettings.Apps = apps.Get<WebAppConfig[]>();
+
+                var apps = _configuration.GetSection("WebAppSettings:Apps").Get<WebAppConfig[]>();
+                if(apps!=null)
+                {
+                    settings.WebAppSettings.Apps = apps;
+                }
+                 
                 settings.WebAppSettings.CurrentApp = webAppSection.GetValue<string>("CurrentApp");
                 var windowSection = _configuration.GetSection("WindowSettings");
                 if (windowSection.Exists())
@@ -72,7 +82,7 @@ namespace WebAppLauncher.Services
                 var appSettings = GetAppSettings();
                 
                 // 验证要切换的应用是否存在
-                if (!appSettings.WebAppSettings.Apps.Any(x=>x.Name==appId))
+                if (!appSettings.WebAppSettings.Apps.Any(x=>x.AppId==appId))
                 {
                     throw new ArgumentException($"应用 '{appId}' 不存在于配置中");
                 }
@@ -98,7 +108,7 @@ namespace WebAppLauncher.Services
                 throw; // 重新抛出异常，让调用者知道更新失败
             }
         }
-        
+
         private void SaveAppSettings(AppSettings appSettings)
         {
             try
@@ -108,17 +118,7 @@ namespace WebAppLauncher.Services
                     WebAppSettings = new
                     {
                         CurrentApp = appSettings.WebAppSettings.CurrentApp,
-                        Apps = appSettings.WebAppSettings.Apps.ToDictionary(
-                         
-                            kvp => new
-                            {
-                                AppId=kvp.AppId,
-                                Name = kvp.Name,
-                                Path = kvp.Path,
-                                Title = kvp.Title,
-                                Run=kvp.Run
-                            }
-                        )
+                        Apps = appSettings.WebAppSettings.Apps  // 直接保存数组，不要 ToDictionary
                     },
                     WindowSettings = new
                     {
@@ -128,13 +128,13 @@ namespace WebAppLauncher.Services
                         DisableContextMenu = appSettings.WindowSettings.DisableContextMenu
                     }
                 };
-                
+
                 var options = new System.Text.Json.JsonSerializerOptions
                 {
                     WriteIndented = true,
                     Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
                 };
-                
+
                 var json = System.Text.Json.JsonSerializer.Serialize(settings, options);
                 File.WriteAllText(_configFilePath, json);
             }

@@ -116,9 +116,7 @@ namespace WebAppLauncher.Services
                 // 检查是否是ASP.NET Core程序（http://localhost开头）
                 if (IsAspNetCoreLocalhostUrl(programPath))
                 {
-                     await RunAspNetCoreAppAsync(programPath, appId, appPath);
-
-                    return true;
+                    return await RunAspNetCoreAppAsync(programPath, appId, appPath);
                 }
 
                 // 处理路径
@@ -263,7 +261,7 @@ namespace WebAppLauncher.Services
         /// <summary>
         /// 运行ASP.NET Core应用
         /// </summary>
-        private async Task RunAspNetCoreAppAsync(string localhostUrl, string appId, string appPath)
+        private async Task<bool> RunAspNetCoreAppAsync(string localhostUrl, string appId, string appPath)
         {
             try
             {
@@ -273,7 +271,7 @@ namespace WebAppLauncher.Services
                 if (IsPortInUse(localhostUrl))
                 {
                     Console.WriteLine($"端口已在使用: {localhostUrl}");
-                    return ; // 端口已在使用，认为启动成功
+                    return true; // 端口已在使用，认为启动成功
                 }
 
                 // 解析端口号
@@ -285,20 +283,32 @@ namespace WebAppLauncher.Services
                 if (string.IsNullOrEmpty(wwwRootPath) || !Directory.Exists(wwwRootPath))
                 {
                     Console.WriteLine($"静态文件目录不存在: {wwwRootPath}");
-                    return ;
+                    return false;
                 }
 
                 Console.WriteLine($"静态文件目录: {wwwRootPath}");
 
-                //启动web
-               Program.WebServer =new EmbeddedWebServer(wwwRootPath, port);
+                // 停止之前的Web服务器
+                if (Program.WebServer != null)
+                {
+                    await Program.WebServer.StopAsync();
+                    Program.WebServer = null;
+                }
+
+                // 启动新的Web服务器
+                Program.WebServer = new EmbeddedWebServer(wwwRootPath, port);
                 await Program.WebServer.StartAsync();
 
+                // 等待服务器启动
+                await Task.Delay(1000);
+
+                // 检查服务器是否成功启动
+                return IsPortInUse(localhostUrl);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"启动ASP.NET Core应用时出错: {ex.Message}");
-                return ;
+                return false;
             }
         }
 
@@ -505,8 +515,24 @@ namespace WebAppLauncher.Services
         /// <summary>
         /// 关闭所有ASP.NET Core进程
         /// </summary>
-        public void StopAllAspNetCoreProcesses()
+        public async Task StopAllAspNetCoreProcesses()
         {
+            // 停止EmbeddedWebServer
+            if (Program.WebServer != null)
+            {
+                try
+                {
+                    Console.WriteLine("关闭ASP.NET Core应用 (EmbeddedWebServer)");
+                    await Program.WebServer.StopAsync();
+                    Program.WebServer = null;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"关闭ASP.NET Core应用时出错: {ex.Message}");
+                }
+            }
+
+            // 清理旧的进程列表
             var processesToStop = _runningAspNetCoreProcesses.ToList();
             foreach (var (url, process) in processesToStop)
             {
@@ -516,7 +542,7 @@ namespace WebAppLauncher.Services
                     {
                         Console.WriteLine($"关闭ASP.NET Core应用: {url}, 进程ID: {process.Id}");
                         process.Kill();
-                        process.WaitForExit(2000);
+                        process.WaitForExit(1000);
                     }
                 }
                 catch (Exception ex)

@@ -266,17 +266,29 @@ namespace WebAppLauncher
                 
                 try
                 {
-                
                     
-                    // 使用PathHelper构建合适的Uri
-                    var uri = PathHelper.BuildUri(_appBasePath, appConfig.Path);
-                    _webView.Source = uri;
                     
                     // 异步运行Run字段中的程序（不等待完成，避免阻塞UI）
                     _ = Task.Run(async () =>
                     {
                         try
                         {
+                            // 关闭之前的ASP.NET Core进程
+                            await _appRunner.StopAllAspNetCoreProcesses();
+                            
+                            // 使用PathHelper构建合适的Uri
+                            var uri = PathHelper.BuildUri(_appBasePath, appConfig.Path);
+                            if(_webView.InvokeRequired)
+                            {
+                                _webView.Invoke(new Action(() =>
+                                {
+                                    _webView.Source = uri;
+                                }));
+                            }else
+                            {
+                                _webView.Source = uri;
+                            }
+                            
                             var successCount = await _appRunner.RunAppsForCurrentApp(appId);
                             if (successCount > 0)
                             {
