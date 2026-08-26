@@ -4,18 +4,20 @@
  * 作者微信：runsoft1024
  */
 using Microsoft.Web.WebView2.WinForms;
+using System.Runtime.Versioning;
 using WebAppLauncher.Models;
 using WebAppLauncher.Services;
 
 namespace WebAppLauncher
 {
+    [SupportedOSPlatform("windows")]
     public partial class MainForm : Form
     {
         private readonly ConfigurationService _configService;
         private readonly AppManagerService _appManager;
         private readonly AppRunnerService _appRunner;
         private readonly WebView2 _webView;
-        private WebAppConfig? _currentApp;
+        private AppConfig? _currentApp;
         private string _appBasePath;
         private MenuStrip _menuStrip;
         private ToolStripMenuItem _fileMenu;
@@ -27,14 +29,19 @@ namespace WebAppLauncher
         private const int MENU_TRIGGER_HEIGHT = 50; // 顶部50像素区域触发显示
         private const int MOUSE_CHECK_INTERVAL = 100; // 每100ms检查一次鼠标位置
 
+        // 导航超时保护：目标为 http(s) 时若长时间无响应（如无后端服务的 localhost），
+        // 超时后显示友好错误页，避免页面一直转圈、窗口看似卡死。
+        private readonly System.Timers.Timer _navTimeout = new() { AutoReset = false, Interval = 10000 };
+        private volatile string _pendingNavTarget = string.Empty;
+
         public MainForm()
         {
             InitializeComponent();
             
+            _appBasePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory);
             _configService = new ConfigurationService();
             _appManager = new AppManagerService();
-            _appRunner = new AppRunnerService();
-            _appBasePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory);
+            _appRunner = new AppRunnerService(_appBasePath);
             
             // 不再需要隐藏菜单计时器（立即隐藏）
             
@@ -43,6 +50,19 @@ namespace WebAppLauncher
             _mouseCheckTimer.Interval = MOUSE_CHECK_INTERVAL;
             _mouseCheckTimer.Tick += MouseCheckTimer_Tick;
             _mouseCheckTimer.Start();
+
+            // 导航超时回调：远程地址长时间无响应（如后端未启动）时给出友好提示，避免卡死
+            _navTimeout.Elapsed += (s, e) =>
+            {
+                var target = _pendingNavTarget;
+                _pendingNavTarget = string.Empty;
+                if (string.IsNullOrEmpty(target))
+                    return;
+                ShowErrorPage(
+                    $"无法连接到地址：{target}\n\n" +
+                    "请确认对应的后端服务（launch 配置的程序）已启动且端口可访问，\n" +
+                    "或检查该应用是否需要先在本地运行服务。");
+            };
             
             // 先创建内容Panel作为WebView2的容器（占满整个窗体）
             var contentPanel = new Panel
@@ -94,8 +114,14 @@ namespace WebAppLauncher
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"初始化WebView2时出错: {ex.Message}", "错误", 
+                Logger.Error("初始化 WebView2 时出错", ex);
+                MessageBox.Show(
+                    "初始化 WebView2 失败。\n\n请确认已安装 Microsoft Edge WebView2 运行时" +
+                    "（可从 https://developer.microsoft.com/microsoft-edge/webview2/ 下载）。\n\n" +
+                    $"错误详情: {ex.Message}",
+                    "WebView2 初始化失败",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Environment.Exit(1);
             }
         }
 
@@ -202,7 +228,7 @@ namespace WebAppLauncher
 
         private void ApplyWindowSettings()
         {
-            var settings = _configService.GetAppSettings().WindowSettings;
+            var settings = _configService.GetAppSettings().Window;
             
             // 设置窗口大小
             this.Size = new Size(settings.Width, settings.Height);
@@ -244,86 +270,105 @@ namespace WebAppLauncher
             
             if (_currentApp != null)
             {
-                LoadAppById(_configService.GetAppSettings().WebAppSettings.CurrentApp);
+                LoadAppById(_configService.GetAppSettings().CurrentApp);
             }
             else
             {
                 ShowErrorPage("未找到当前应用的配置");
             }
         }
-        
+
+        /// <summary>
+        /// 线程安全地让 WebView 导航到指定地址（自动处理跨线程 Invoke）。
+        /// </summary>
+        private void NavigateTo(Uri uri)
+        {
+            if (uri == null)
+                return;
+
+            // 记录目标，供超时回调判断是否仍停留在同一导航
+            _pendingNavTarget = uri.ToString();
+
+            // 仅对远程 http(s) 地址启用导航超时（本地 file:// 一般即时失败或成功）
+            if (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            {
+                _navTimeout.Stop();
+                _navTimeout.Start();
+            }
+            else
+            {
+                _navTimeout.Stop();
+            }
+
+            if (_webView.InvokeRequired)
+            {
+                _webView.Invoke(new Action(() => { _webView.Source = uri; }));
+            }
+            else
+            {
+                _webView.Source = uri;
+            }
+        }
+
         private async void LoadAppById(string appId)
         {
-            var appConfig = _configService.GetAppSettings().WebAppSettings.Apps
-                .FirstOrDefault(kvp => kvp.AppId == appId);
+            var appConfig = _configService.GetAppSettings().Apps
+                .FirstOrDefault(kvp => kvp.Id == appId);
             
             if (appConfig != null)
             {
                 _currentApp = appConfig;
-                
+
                 // 设置窗口标题
                 this.Text = appConfig.Title;
-                
+
+                // 推导后端地址：url 优先；否则从 launch 的 --port 自动生成
+                // http://localhost:{port}/index.html（端口只在 launch 书写一次）。
+                string? backendUrl = AppRunnerService.ResolveBackendUrl(appConfig.Url, appConfig.Launch);
+
+                // 最终导航目标：后端地址优先，否则退回本地 source（file://）
+                string targetPath = !string.IsNullOrWhiteSpace(backendUrl)
+                    ? backendUrl
+                    : appConfig.Source;
+
+                if (string.IsNullOrWhiteSpace(targetPath))
+                {
+                    ShowErrorPage($"应用 '{appId}' 未配置 source 或可用后端（url / launch --port），无法打开");
+                    return;
+                }
+
                 try
                 {
-                    
-                    
-                    // 异步运行Run字段中的程序（不等待完成，避免阻塞UI）
-                    _ = Task.Run(async () =>
+                    // 关键顺序：必须先拉起本地后端（如 AspNetCoreServer），等其端口就绪，
+                    // 再让 WebView 导航 url。否则导航发生在服务器启动前，会连接失败报 Unknown。
+                    if (!string.IsNullOrWhiteSpace(appConfig.Launch))
                     {
-                        try
-                        {
-                            // 关闭之前的ASP.NET Core进程
-                            await _appRunner.StopAllAspNetCoreProcesses();
-                            
-                            // 使用PathHelper构建合适的Uri
-                            var uri = PathHelper.BuildUri(_appBasePath, appConfig.Path);
-                            if(_webView.InvokeRequired)
-                            {
-                                _webView.Invoke(new Action(() =>
-                                {
-                                    _webView.Source = uri;
-                                }));
-                            }else
-                            {
-                                _webView.Source = uri;
-                            }
-                            
-                            var successCount = await _appRunner.RunAppsForCurrentApp(appId);
-                            if (successCount > 0)
-                            {
-                                if(appConfig.Run.StartsWith("http://localhost"))
-                                {
-                                    if(_webView.InvokeRequired)
-                                    {
-                                        _webView.Invoke(new Action(() =>
-                                        {
-                                            _webView.Source = new Uri(appConfig.Run);
-                                        }));
-                                    }else
-                                    {
-                                        _webView.Source = new Uri(appConfig.Run);
-                                    }
-                                    
-                                }
-                                Console.WriteLine($"应用 '{appId}' 的Run字段程序启动完成");
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"运行应用 '{appId}' 的Run程序时出错: {ex.Message}");
-                        }
-                    });
+                        // 关闭之前的后端进程（避免端口冲突/孤儿进程）
+                        _appRunner.KillAll();
+                        // 若 launch 未写 --staticDir，自动用 source 的目录作为静态根目录
+                        var launchCmd = AppRunnerService.ApplyStaticDirDefault(appConfig.Launch, appConfig.Source);
+                        // RunProgramAsync 内部会启动进程并等待端口就绪（WaitForPortAsync）
+                        await _appRunner.RunProgramAsync(launchCmd, backendUrl ?? string.Empty);
+                    }
+
+                    // 后端就绪后，导航到目标页面（后端地址优先，否则 source）
+                    var targetUri = PathHelper.BuildUri(_appBasePath, targetPath);
+                    NavigateTo(targetUri);
                 }
                 catch (FileNotFoundException ex)
                 {
-                    // 本地文件不存在
                     ShowErrorPage($"应用文件未找到: {ex.Message}");
+                    return;
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("端口冲突"))
+                {
+                    ShowErrorPage($"端口冲突：{ex.Message}");
+                    return;
                 }
                 catch (Exception ex)
                 {
-                    // 其他错误（如无效的网址格式）
-                    ShowErrorPage($"加载应用时出错: {ex.Message}");
+                    ShowErrorPage($"启动应用时出错: {ex.Message}");
+                    return;
                 }
             }
             else
@@ -334,6 +379,10 @@ namespace WebAppLauncher
 
         private async void OnNavigationCompleted(object? sender, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs e)
         {
+            // 任意导航结束（成功或失败）都停止超时计时器
+            _navTimeout.Stop();
+            _pendingNavTarget = string.Empty;
+
             if (!e.IsSuccess)
             {
                 var errorText = $"导航失败: {e.WebErrorStatus}";
@@ -1129,19 +1178,18 @@ namespace WebAppLauncher
                     var json = File.ReadAllText(configFile);
                     using var jsonDoc = System.Text.Json.JsonDocument.Parse(json);
                     
-                    if (jsonDoc.RootElement.TryGetProperty("WebAppSettings", out var webAppSettings) &&
-                        webAppSettings.TryGetProperty("CurrentApp", out var currentApp))
+                    if (jsonDoc.RootElement.TryGetProperty("currentApp", out var currentApp))
                     {
-                        return currentApp.GetString() ?? "app1";
+                        return currentApp.GetString() ?? string.Empty;
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"读取当前应用配置时出错: {ex.Message}");
+                Logger.Error($"读取当前应用配置时出错: {ex.Message}", ex);
             }
             
-            return "app1";
+            return string.Empty;
         }
         
         private void CreateSampleAppDialog()
@@ -1225,18 +1273,43 @@ namespace WebAppLauncher
             {
                 var settings = _configService.GetAppSettings();
                 var message = new System.Text.StringBuilder();
-                message.AppendLine("Run字段配置验证:");
+                message.AppendLine("应用配置验证:");
                 message.AppendLine("==================");
                 message.AppendLine();
-                
-                foreach (var app in settings.WebAppSettings.Apps)
+
+                foreach (var app in settings.Apps)
                 {
-                    var validationResult = _appRunner.ValidateRunConfig(app.AppId);
-                    message.AppendLine(validationResult);
+                    message.AppendLine($"[{app.Name}] (id={app.Id})");
+
+                    // source：要显示的内容
+                    if (string.IsNullOrWhiteSpace(app.Source))
+                        message.AppendLine("  source: (空)");
+                    else
+                        message.AppendLine($"  source: {app.Source}");
+
+                    // launch：要启动的本机程序
+                    if (string.IsNullOrWhiteSpace(app.Launch))
+                    {
+                        message.AppendLine("  launch: (空) 不启动额外程序");
+                    }
+                    else
+                    {
+                        var program = app.Launch.Split(' ')[0];
+                        var resolved = _appRunner.TryResolveProgram(program);
+                        message.AppendLine(resolved != null
+                            ? $"  launch: OK -> {resolved}"
+                            : $"  launch: 不可用 -> 未找到程序 {program}");
+                    }
+
+                    // url：最终打开的网址
+                    message.AppendLine(string.IsNullOrWhiteSpace(app.Url)
+                        ? "  url: (空) 将打开 source"
+                        : $"  url: {app.Url}");
+
                     message.AppendLine();
                 }
-                
-                MessageBox.Show(message.ToString(), "Run字段配置验证", 
+
+                MessageBox.Show(message.ToString(), "应用配置验证",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
@@ -1248,24 +1321,11 @@ namespace WebAppLauncher
         
         private void ShowAboutDialog()
         {
-            var aboutText = $@"
-WebAppLauncher v1.0
-.NET 8.0 WinForms Web应用容器
-
-功能特点：
-• 支持多个Web应用管理
-• 通过appsettings.json配置
-• 集成WebView2浏览器
-• 禁用右键菜单
-• 应用切换功能
-
-项目路径：{Application.StartupPath}
-当前时间：{DateTime.Now:yyyy-MM-dd HH:mm:ss}
-
-作者微信：runsoft1024
-© 2025 WebAppLauncher - 专业的Web应用容器";
-            
-            MessageBox.Show(aboutText, "关于 WebAppLauncher", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            // 使用自定义关于窗体（含二维码图片，二维码由外部提供：程序根目录 qrcode.png）
+            using (var aboutForm = new AboutForm())
+            {
+                aboutForm.ShowDialog(this);
+            }
         }
 
         private async void RestoreScrollbarsFunction()
@@ -1434,6 +1494,17 @@ WebAppLauncher v1.0
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             base.OnFormClosing(e);
+
+            // 终止所有由本程序启动的后端子进程，避免退出后留下孤儿进程
+            try
+            {
+                _appRunner?.KillAll();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("清理子进程时出错", ex);
+            }
+
             // 清理鼠标检查计时器
             if (_mouseCheckTimer != null)
             {

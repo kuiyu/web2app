@@ -3,20 +3,30 @@
  * 功能：用程序打开本地网页，vue页面，网站
  * 作者微信：runsoft1024
  */
+using System;
+using System.Runtime.Versioning;
+using System.Threading;
 using System.Threading.Tasks;
 using WebAppLauncher.Services;
 
 namespace WebAppLauncher
 {
+    [SupportedOSPlatform("windows")]
     internal static class Program
     {
-        public static EmbeddedWebServer WebServer { get; set; }
+        // 单实例互斥体：防止多次启动导致端口冲突
+        private const string MutexName = @"Global\WebAppLauncher_SingleInstance_9F3C2A1B";
+        private static Mutex? _singleInstanceMutex;
+
         /// <summary>
         ///  The main entry point for the application.
         /// </summary>
         [STAThread]
         static void  Main()
         {
+            // 初始化日志（尽早，便于捕获后续错误）
+            Logger.Initialize();
+
             // 检查是否以测试模式运行
             var args = Environment.GetCommandLineArgs();
             bool testMode = args.Contains("--test") || args.Contains("-t");
@@ -24,6 +34,27 @@ namespace WebAppLauncher
             if (testMode)
             {
                 RunTests();
+                return;
+            }
+
+            // 单实例检查
+            bool createdNew;
+            try
+            {
+                _singleInstanceMutex = new Mutex(true, MutexName, out createdNew);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("创建单实例互斥体失败", ex);
+                createdNew = true; // 失败时退化为允许多开，避免无法启动
+            }
+
+            if (!createdNew)
+            {
+                Logger.Warning("已存在另一个实例，本次启动将被阻止。");
+                MessageBox.Show("WebAppLauncher 已在运行，请勿重复启动。",
+                    "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                _singleInstanceMutex?.Close();
                 return;
             }
 
@@ -39,7 +70,6 @@ namespace WebAppLauncher
             try
             {
                 Application.Run(new MainForm());
-
             }
             catch (Exception ex)
             {
@@ -47,11 +77,11 @@ namespace WebAppLauncher
             }
             finally
             {
-                // 确保在应用程序退出时停止Web服务器
-                if (WebServer != null)
-                {
-                    WebServer.StopAsync().Wait();
-                }
+                // 释放单实例互斥
+                try { _singleInstanceMutex?.ReleaseMutex(); } catch { }
+                try { _singleInstanceMutex?.Close(); } catch { }
+
+                Logger.Info("应用程序已退出。");
             }
         }
         private static void RunTests()
@@ -163,7 +193,8 @@ namespace WebAppLauncher
 
         private static void HandleException(Exception ex)
         {
-            MessageBox.Show($"应用程序发生错误:\n{ex.Message}\n\n详细信息: {ex.StackTrace}", 
+            Logger.Error("发生未处理异常", ex);
+            MessageBox.Show($"应用程序发生错误:\n{ex.Message}", 
                 "应用程序错误", 
                 MessageBoxButtons.OK, 
                 MessageBoxIcon.Error);
@@ -171,6 +202,7 @@ namespace WebAppLauncher
 
         private static void HandleFatalException(Exception ex)
         {
+            Logger.Error("发生致命异常，应用程序即将关闭", ex);
             MessageBox.Show($"应用程序发生致命错误:\n{ex.Message}\n\n应用程序将关闭。", 
                 "致命错误", 
                 MessageBoxButtons.OK, 

@@ -8,6 +8,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 
 namespace WebAppLauncher
 {
@@ -15,6 +16,7 @@ namespace WebAppLauncher
     /// 简单的图标生成器
     /// 注意：这只是一个示例，实际项目中建议使用专业的图标编辑工具
     /// </summary>
+    [SupportedOSPlatform("windows")]
     public static class IconGenerator
     {
         /// <summary>

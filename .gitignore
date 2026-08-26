@@ -399,3 +399,4 @@ pnpm-debug.log*
 /backend/src/RsCms.WebApi/Plugins
 /backend/src/RsCms.WebApi/wwwroot/public
 /backend/src/RsCms.WebApi/Plugins/Plugin.RsCms
+/.codebuddy

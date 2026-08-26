@@ -5,6 +5,7 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
+    <SupportedOSPlatformVersion>6.1</SupportedOSPlatformVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
@@ -55,9 +56,10 @@
       <PackagePath>\</PackagePath>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-    <None Update="..\AspNetCoreServer\bin\Release\net8.0\win-x64\publish\AspNetCoreServer.exe">
+    <Content Include="..\AspNetCoreServer\bin\Release\net8.0\win-x64\publish\AspNetCoreServer.exe">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
+      <Visible>false</Visible>
+    </Content>
   </ItemGroup>
 
 </Project>

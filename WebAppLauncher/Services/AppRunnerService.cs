@@ -1,608 +1,540 @@
 /*
- * 名称：web应用容器
- * 功能：用程序打开本地网页，vue页面，网站
- * 作者微信：runsoft1024
+ * 名称：web应用容器 - 外部程序/后端启动器
+ * 功能：根据配置中的 Run 字段启动外部可执行程序，并等待其对外暴露 HTTP 端口（健康检查）。
+ *       所有启动的进程会被登记，便于退出时统一清理，避免孤儿进程。
  */
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
-using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
-using WebAppLauncher.Models;
 
 namespace WebAppLauncher.Services
 {
     public class AppRunnerService
     {
-        private readonly ConfigurationService _configService;
         private readonly string _appBasePath;
-        private readonly Dictionary<string, Process> _runningAspNetCoreProcesses = new Dictionary<string, Process>();
+        private readonly List<Process> _runningProcesses = new List<Process>();
+        private readonly HashSet<int> _usedPorts = new HashSet<int>();
+        private readonly object _procLock = new object();
 
-        public AppRunnerService()
+        // 进程级 Job Object：主进程退出（含崩溃）时，Job 内的所有子进程
+        // （包括脱离父进程树、自行 fork 的后代）都会被操作系统自动终止，
+        // 彻底避免孤儿进程。
+        private static readonly Lazy<JobObject?> _job = new Lazy<JobObject?>(() => JobObject.Create());
+
+        public AppRunnerService(string appBasePath)
         {
-            _configService = new ConfigurationService();
-            _appBasePath = AppDomain.CurrentDomain.BaseDirectory;
+            _appBasePath = appBasePath;
         }
 
         /// <summary>
-        /// 运行指定应用的Run字段中的程序
+        /// 启动 Run 配置中的可执行程序，并返回它监听的 URL（用于 WebView 跳转）。
+        /// 若 waitForPort 为 true，会等待本地端口可连通或超时后返回。
         /// </summary>
-        /// <param name="appId">应用ID</param>
-        /// <returns>成功运行的程序数量</returns>
-        public async Task<int> RunAppsForCurrentApp(string appId)
+        public async Task<string> RunProgramAsync(string runCmd, string url, bool waitForPort = true, int timeoutMs = 15000)
         {
-            try
+            // 若 Run 整体是一个 http/https URL，说明后端由外部服务托管（如独立的
+            // ASP.NET Core 应用），容器不负责启动进程，仅由 MainForm 将 WebView
+            // 导航到该地址。直接返回，避免把它误当作本地程序去解析而失败。
+            if (Uri.TryCreate(runCmd, UriKind.Absolute, out var runUri)
+                && (runUri.Scheme == Uri.UriSchemeHttp || runUri.Scheme == Uri.UriSchemeHttps))
             {
-                var appConfig = GetAppConfig(appId);
-                if (appConfig == null || string.IsNullOrWhiteSpace(appConfig.Run))
-                {
-                    Console.WriteLine($"应用 '{appId}' 没有配置Run字段或Run字段为空");
-                    return 0;
-                }
+                Logger.Info($"Run 为外部 URL，跳过程序启动（由外部服务托管）: {runCmd}");
+                return url;
+            }
 
-                // 解析逗号分隔的程序路径
-                var programPaths = ParseProgramPaths(appConfig.Run);
-                if (programPaths.Length == 0)
-                {
-                    Console.WriteLine($"应用 '{appId}' 的Run字段没有有效的程序路径");
-                    return 0;
-                }
+            string program = runCmd;
+            string args = string.Empty;
 
-                Console.WriteLine($"为应用 '{appId}' 启动 {programPaths.Length} 个程序...");
+            var spaceIdx = runCmd.IndexOf(' ');
+            if (spaceIdx >= 0)
+            {
+                program = runCmd.Substring(0, spaceIdx);
+                args = runCmd.Substring(spaceIdx + 1).Trim();
+            }
 
-                int successCount = 0;
-                foreach (var programPath in programPaths)
+            var resolved = ResolveProgramPath(program);
+            if (resolved == null)
+            {
+                var msg = $"无法找到可执行程序: {program}（已搜索 apps 目录与系统 PATH）。Run 配置将不会生效。";
+                Logger.Warning(msg);
+                throw new FileNotFoundException(msg, program);
+            }
+
+            // 端口冲突检测：同一实例内多个后端应用若使用相同端口会互相干扰
+            var ep = TryParseLocalhostUrl(url);
+            if (ep != null)
+            {
+                lock (_procLock)
                 {
-                    if (await RunProgramAsync(programPath, appId, appConfig.Path))
+                    if (_usedPorts.Contains(ep.Value.port))
                     {
-                        successCount++;
+                        var msg = $"端口冲突：{ep.Value.port} 已被本容器中另一个应用占用，无法启动 {program}。请为不同应用配置不同端口。";
+                        Logger.Error(msg);
+                        throw new InvalidOperationException(msg);
                     }
                 }
-
-                Console.WriteLine($"成功启动 {successCount}/{programPaths.Length} 个程序");
-                return successCount;
             }
-            catch (Exception ex)
+
+            var startInfo = new ProcessStartInfo
             {
-                Console.WriteLine($"运行应用 '{appId}' 的Run程序时出错: {ex.Message}");
-                return 0;
-            }
-        }
+                FileName = resolved,
+                Arguments = args,
+                WorkingDirectory = _appBasePath,
+                UseShellExecute = false,        // 必须关闭，才能捕获输出与退出
+                CreateNoWindow = true,         // 隐藏后端/子进程的控制台窗口
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
 
-        /// <summary>
-        /// 运行当前选中应用的Run字段中的程序
-        /// </summary>
-        public async Task<int> RunAppsForCurrentApp()
-        {
-            var currentAppId = _configService.GetAppSettings().WebAppSettings.CurrentApp;
-            return await RunAppsForCurrentApp(currentAppId);
-        }
-
-        /// <summary>
-        /// 获取应用配置
-        /// </summary>
-        private WebAppConfig? GetAppConfig(string appId)
-        {
-            var settings = _configService.GetAppSettings();
-            var appConfig = settings.WebAppSettings.Apps.FirstOrDefault(x => x.AppId == appId);
-            return appConfig;
-        }
-
-        /// <summary>
-        /// 解析逗号分隔的程序路径
-        /// </summary>
-        private string[] ParseProgramPaths(string runConfig)
-        {
-            if (string.IsNullOrWhiteSpace(runConfig))
-                return Array.Empty<string>();
-
-            // 分割逗号，去除空白字符，过滤空项
-            return runConfig.Split(',')
-                .Select(path => path.Trim())
-                .Where(path => !string.IsNullOrEmpty(path))
-                .ToArray();
-        }
-
-        /// <summary>
-        /// 运行单个程序
-        /// </summary>
-        private async Task<bool> RunProgramAsync(string programPath, string appId, string appPath)
-        {
+            Process process;
             try
             {
-                // 检查是否是ASP.NET Core程序（http://localhost开头）
-                if (IsAspNetCoreLocalhostUrl(programPath))
-                {
-                    return await RunAspNetCoreAppAsync(programPath, appId, appPath);
-                }
-
-                // 处理路径
-                string fullPath = ResolveProgramPath(programPath);
-                
-                if (string.IsNullOrEmpty(fullPath))
-                {
-                    Console.WriteLine($"程序路径无效或文件不存在: {programPath}");
-                    return false;
-                }
-
-                Console.WriteLine($"启动程序: {fullPath}");
-
-                // 创建进程启动信息
-                var processStartInfo = new ProcessStartInfo
-                {
-                    FileName = fullPath,
-                    UseShellExecute = true, // 使用Shell执行，可以打开各种文件类型
-                    CreateNoWindow = false,
-                    WindowStyle = ProcessWindowStyle.Normal
-                };
-
-                // 启动进程
-                var process = Process.Start(processStartInfo);
-                if (process == null)
-                {
-                    Console.WriteLine($"无法启动程序: {fullPath}");
-                    return false;
-                }
-
-                // 等待一小段时间确保进程启动
-                await Task.Delay(100);
-                
-                // 检查进程是否仍在运行
-                if (process.HasExited)
-                {
-                    Console.WriteLine($"程序启动后立即退出: {fullPath}, 退出代码: {process.ExitCode}");
-                    return process.ExitCode == 0;
-                }
-
-                Console.WriteLine($"程序启动成功: {fullPath}, 进程ID: {process.Id}");
-                return true;
+                process = Process.Start(startInfo) ?? throw new InvalidOperationException("进程创建失败（返回 null）。");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"启动程序 '{programPath}' 时出错: {ex.Message}");
-                return false;
+                Logger.Error($"启动程序失败: {resolved} {args}", ex);
+                throw;
             }
+
+            lock (_procLock)
+            {
+                _runningProcesses.Add(process);
+                if (ep != null)
+                    _usedPorts.Add(ep.Value.port);
+            }
+
+            // 将进程加入 Job Object，确保主进程退出时其（含脱离树的子进程）被自动清理
+            try
+            {
+                _job.Value?.AddProcess(process);
+            }
+            catch (Exception ex)
+            {
+                // Job 绑定失败不应阻止启动，仅降级为 Kill(true) 清理
+                Logger.Warning($"将进程加入 Job Object 失败（已降级为普通清理）: {ex.Message}");
+            }
+
+            // 异步捕获输出，避免子进程因输出缓冲写满而阻塞
+            var procId = process.Id;
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    while (!process.StandardOutput.EndOfStream)
+                        Logger.Info($"[{Path.GetFileName(resolved)}:{procId}] {process.StandardOutput.ReadLine()}");
+                }
+                catch { }
+            });
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    while (!process.StandardError.EndOfStream)
+                        Logger.Warning($"[{Path.GetFileName(resolved)}:{procId}] {process.StandardError.ReadLine()}");
+                }
+                catch { }
+            });
+
+            // 是否需要等待该进程对外暴露端口（仅当配置了本地后端 url 时）
+            var expectsPort = waitForPort && TryParseLocalhostUrl(url) != null;
+
+            // 仅当“期望进程常驻并提供端口”时，进程立即退出才视为启动失败。
+            // 否则（如 explorer.exe、cmd /k 等一次性/复用实例的程序）启动即视为成功。
+            if (expectsPort && process.HasExited)
+            {
+                var code = process.ExitCode;
+                Logger.Error($"程序 {resolved} 启动后立即退出，退出码: {code}（该应用期望它常驻并提供端口）");
+                RemoveProcess(process);
+                throw new InvalidOperationException($"程序 {resolved} 启动后立即退出，退出码: {code}");
+            }
+
+            Logger.Info($"已启动程序: {resolved} (PID={procId})" + (expectsPort ? $"，等待端口就绪: {url}" : ""));
+
+            if (expectsPort)
+            {
+                var ok = await WaitForPortAsync(url, timeoutMs);
+                if (!ok)
+                {
+                    Logger.Warning($"端口未在 {timeoutMs}ms 内就绪: {url}。将继续尝试加载（可能页面稍后可用）。");
+                }
+                else
+                {
+                    Logger.Info($"端口已就绪: {url}");
+                }
+            }
+
+            return url;
         }
 
         /// <summary>
-        /// 解析程序路径
+        /// 通过 TCP 连接重试判断本地端口是否可连通（替代不可靠的 TcpListener 探测）。
         /// </summary>
-        private string ResolveProgramPath(string programPath)
+        public static async Task<bool> WaitForPortAsync(string url, int timeoutMs = 15000, int intervalMs = 250)
         {
-            if (string.IsNullOrWhiteSpace(programPath))
-                return string.Empty;
+            var ep = TryParseLocalhostUrl(url);
+            if (ep == null)
+                return false;
 
-            programPath = programPath.Trim();
-
-            // 检查是否是绝对路径
-            if (Path.IsPathRooted(programPath))
+            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            while (DateTime.UtcNow < deadline)
             {
-                // 绝对路径，直接检查文件是否存在
-                if (File.Exists(programPath) || Directory.Exists(programPath))
-                    return programPath;
-                    
-                // 如果文件不存在，尝试添加.exe扩展名
-                if (!programPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                {
-                    var exePath = programPath + ".exe";
-                    if (File.Exists(exePath))
-                        return exePath;
-                }
-            }
-            else
-            {
-                // 相对路径，尝试在以下位置查找：
-                // 1. 相对于应用程序基础目录
-                // 2. 在系统PATH中查找
-                // 3. 常见程序目录
-
-                // 1. 相对于应用程序基础目录
-                var fullPath = Path.Combine(_appBasePath, programPath);
-                if (File.Exists(fullPath) || Directory.Exists(fullPath))
-                    return fullPath;
-
-                // 2. 如果相对路径不存在，尝试添加.exe扩展名
-                if (!programPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                {
-                    var exePath = Path.Combine(_appBasePath, programPath + ".exe");
-                    if (File.Exists(exePath))
-                        return exePath;
-                }
-
-                // 3. 在系统PATH中查找
                 try
                 {
-                    var pathEnv = Environment.GetEnvironmentVariable("PATH");
-                    if (!string.IsNullOrEmpty(pathEnv))
+                    using var client = new TcpClient();
+                    var connectTask = client.ConnectAsync(ep.Value.host, ep.Value.port);
+                    if (await Task.WhenAny(connectTask, Task.Delay(intervalMs)) == connectTask && client.Connected)
                     {
-                        var paths = pathEnv.Split(Path.PathSeparator);
-                        foreach (var path in paths)
-                        {
-                            if (string.IsNullOrEmpty(path))
-                                continue;
-
-                            var testPath = Path.Combine(path, programPath);
-                            if (File.Exists(testPath))
-                                return testPath;
-
-                            // 尝试添加.exe扩展名
-                            if (!programPath.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                            {
-                                testPath = Path.Combine(path, programPath + ".exe");
-                                if (File.Exists(testPath))
-                                    return testPath;
-                            }
-                        }
+                        return true;
                     }
                 }
                 catch
                 {
-                    // 忽略PATH查找错误
+                    // 连接失败，继续重试
                 }
-            }
 
-            // 如果以上方法都找不到，返回原始路径（让Process.Start处理）
-            return programPath;
+                // 子进程退出则不再等待
+                if (ep.Value.host == "127.0.0.1" || ep.Value.host == "localhost")
+                {
+                    // 无法在此关联具体进程，仅按超时返回
+                }
+
+                await Task.Delay(intervalMs);
+            }
+            return false;
         }
 
-        /// <summary>
-        /// 检查是否是ASP.NET Core本地主机URL
-        /// </summary>
-        private bool IsAspNetCoreLocalhostUrl(string programPath)
-        {
-            return !string.IsNullOrWhiteSpace(programPath) && 
-                   (programPath.StartsWith("http://localhost:", StringComparison.OrdinalIgnoreCase) || 
-                    programPath.StartsWith("https://localhost:", StringComparison.OrdinalIgnoreCase));
-        }
-
-        /// <summary>
-        /// 运行ASP.NET Core应用
-        /// </summary>
-        private async Task<bool> RunAspNetCoreAppAsync(string localhostUrl, string appId, string appPath)
-        {
-            try
-            {
-                Console.WriteLine($"启动ASP.NET Core应用: {localhostUrl}, 应用ID: {appId}, 静态文件路径: {appPath}");
-
-                // 检查端口是否已经在使用
-                if (IsPortInUse(localhostUrl))
-                {
-                    Console.WriteLine($"端口已在使用: {localhostUrl}");
-                    return true; // 端口已在使用，认为启动成功
-                }
-
-                // 解析端口号
-                var uri = new Uri(localhostUrl);
-                var port = uri.Port;
-
-                // 确定静态文件目录
-                var wwwRootPath = ResolveStaticFileDirectory(appPath);
-                if (string.IsNullOrEmpty(wwwRootPath) || !Directory.Exists(wwwRootPath))
-                {
-                    Console.WriteLine($"静态文件目录不存在: {wwwRootPath}");
-                    return false;
-                }
-
-                Console.WriteLine($"静态文件目录: {wwwRootPath}");
-
-                // 停止之前的Web服务器
-                if (Program.WebServer != null)
-                {
-                    await Program.WebServer.StopAsync();
-                    Program.WebServer = null;
-                }
-
-                // 启动新的Web服务器
-                Program.WebServer = new EmbeddedWebServer(wwwRootPath, port);
-                await Program.WebServer.StartAsync();
-
-                // 等待服务器启动
-                await Task.Delay(1000);
-
-                // 检查服务器是否成功启动
-                return IsPortInUse(localhostUrl);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"启动ASP.NET Core应用时出错: {ex.Message}");
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// 解析静态文件目录
-        /// </summary>
-        private string ResolveStaticFileDirectory(string appPath)
-        {
-            if (string.IsNullOrWhiteSpace(appPath))
-                return string.Empty;
-
-            // 如果是URL，返回空
-            if (PathHelper.IsUrl(appPath))
-                return string.Empty;
-
-            // 如果是相对路径，转换为绝对路径
-            if (!Path.IsPathRooted(appPath))
-            {
-                string fullPath;
-                
-                // 检查appPath是否已经以"apps/"开头
-                if (appPath.StartsWith("apps/", StringComparison.OrdinalIgnoreCase) || 
-                    appPath.StartsWith("apps\\", StringComparison.OrdinalIgnoreCase))
-                {
-                    // 如果已经以"apps/"开头，直接使用_appBasePath作为基础路径
-                    fullPath = Path.Combine(_appBasePath, appPath.Replace('/', '\\'));
-                }
-                else
-                {
-                    // 否则，添加"apps"目录
-                    var appsBasePath = Path.Combine(_appBasePath, "apps");
-                    fullPath = Path.Combine(appsBasePath, appPath.Replace('/', '\\'));
-                }
-                
-                Console.WriteLine($"解析静态文件路径: {appPath} -> {fullPath}");
-                
-                // 如果路径是文件，返回文件所在目录
-                if (File.Exists(fullPath))
-                {
-                    var dirPath = Path.GetDirectoryName(fullPath) ?? string.Empty;
-                    Console.WriteLine($"路径是文件，返回目录: {dirPath}");
-                    return dirPath;
-                }
-                
-                // 如果路径是目录，直接返回
-                if (Directory.Exists(fullPath))
-                {
-                    Console.WriteLine($"路径是目录，直接返回: {fullPath}");
-                    return fullPath;
-                }
-                
-                // 如果文件和目录都不存在，尝试查找最近的存在的目录
-                var currentPath = fullPath;
-                while (!Directory.Exists(currentPath) && !string.IsNullOrEmpty(currentPath))
-                {
-                    currentPath = Path.GetDirectoryName(currentPath);
-                }
-                
-                if (!string.IsNullOrEmpty(currentPath) && Directory.Exists(currentPath))
-                {
-                    Console.WriteLine($"找到最近的存在目录: {currentPath}");
-                    return currentPath;
-                }
-            }
-            else
-            {
-                // 绝对路径
-                if (File.Exists(appPath))
-                {
-                    return Path.GetDirectoryName(appPath) ?? string.Empty;
-                }
-                
-                if (Directory.Exists(appPath))
-                {
-                    return appPath;
-                }
-            }
-
-            Console.WriteLine($"无法解析静态文件目录: {appPath}");
-            return string.Empty;
-        }
-
-        /// <summary>
-        /// 检查端口是否在使用
-        /// </summary>
-        private bool IsPortInUse(string url)
+        private static (string host, int port)? TryParseLocalhostUrl(string url)
         {
             try
             {
                 var uri = new Uri(url);
-                var port = uri.Port;
-
-                // 尝试绑定端口，如果成功则端口未被使用，否则端口已被使用
-                using (var listener = new TcpListener(IPAddress.Loopback, port))
-                {
-                    try
-                    {
-                        listener.Start();
-                        // 端口未被使用
-                        return false;
-                    }
-                    catch (SocketException)
-                    {
-                        // 端口已被使用
-                        return true;
-                    }
-                    finally
-                    {
-                        try
-                        {
-                            listener.Stop();
-                        }
-                        catch
-                        {
-                            // 忽略关闭时的异常
-                        }
-                    }
-                }
+                var host = uri.Host;
+                if (host != "localhost" && host != "127.0.0.1" && host != "[::1]")
+                    return null;
+                return (host == "[::1]" ? "127.0.0.1" : host, uri.Port);
             }
             catch
             {
-                // 发生异常，认为端口已被使用
-                return true;
-            }
-        }
-        private bool StartWeb(string url)
-        {
-            try
-            {
-                var uri = new Uri(url);
-                var port = uri.Port;
-
-                // 尝试绑定端口，如果成功则端口未被使用，否则端口已被使用
-                using (var listener = new TcpListener(IPAddress.Loopback, port))
-                {
-                    try
-                    {
-                        listener.Start();
-                        // 端口未被使用，说明ASP.NET Core应用没有成功启动
-                        return false;
-                    }
-                    catch (SocketException)
-                    {
-                        // 端口已被使用，说明ASP.NET Core应用成功启动
-                        return true;
-                    }
-                    finally
-                    {
-                        try
-                        {
-                            listener.Stop();
-                        }
-                        catch
-                        {
-                            // 忽略关闭时的异常
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                // 发生异常，认为ASP.NET Core应用成功启动
-                return true;
+                return null;
             }
         }
 
         /// <summary>
-        /// 读取进程输出
+        /// 从 launch 命令中解析 --port 参数（如 "AspNetCoreServer.exe --port 63000 ..."），
+        /// 用于当 url 未配置时，自动推导后端地址 http://localhost:{port}/index.html。
         /// </summary>
-        private async Task ReadProcessOutput(Process process, string url)
+        public static int? TryParsePortFromLaunch(string launch)
         {
-            try
+            if (string.IsNullOrWhiteSpace(launch))
+                return null;
+            var args = launch.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < args.Length - 1; i++)
             {
-                while (!process.StandardOutput.EndOfStream)
-                {
-                    var line = await process.StandardOutput.ReadLineAsync();
-                    if (!string.IsNullOrEmpty(line))
-                    {
-                        Console.WriteLine($"[ASP.NET Core] {line}");
-                    }
-                }
-
-                while (!process.StandardError.EndOfStream)
-                {
-                    var line = await process.StandardError.ReadLineAsync();
-                    if (!string.IsNullOrEmpty(line))
-                    {
-                        Console.WriteLine($"[ASP.NET Core Error] {line}");
-                    }
-                }
-
-                // 进程退出
-                process.WaitForExit();
-                Console.WriteLine($"ASP.NET Core应用退出: {url}, 退出代码: {process.ExitCode}");
-                _runningAspNetCoreProcesses.Remove(url);
+                if (args[i] == "--port" && int.TryParse(args[i + 1], out var port))
+                    return port;
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"读取ASP.NET Core进程输出时出错: {ex.Message}");
-                _runningAspNetCoreProcesses.Remove(url);
-            }
+            return null;
         }
 
         /// <summary>
-        /// 关闭所有ASP.NET Core进程
+        /// 推导后端地址：优先用显式 url；否则若 launch 含 --port，自动生成
+        /// http://localhost:{port}/index.html（避免端口在 url 与 launch 中重复书写）。
         /// </summary>
-        public async Task StopAllAspNetCoreProcesses()
+        public static string? ResolveBackendUrl(string? url, string? launch)
         {
-            // 停止EmbeddedWebServer
-            if (Program.WebServer != null)
+            if (!string.IsNullOrWhiteSpace(url))
+                return url;
+            var port = TryParsePortFromLaunch(launch ?? string.Empty);
+            return port.HasValue ? $"http://localhost:{port}/index.html" : null;
+        }
+
+        /// <summary>
+        /// 补全 --staticDir：当 launch 未显式写 --staticDir 时，用 source 的值作为静态目录。
+        /// source 若带文件名（如 "apps/ai/index.html"）会自动截取目录部分（"apps/ai"）。
+        /// </summary>
+        public static string ApplyStaticDirDefault(string launch, string? source)
+        {
+            if (string.IsNullOrWhiteSpace(launch))
+                return launch;
+            // 已显式指定 --staticDir，则不再补全
+            if (launch.Contains("--staticDir", StringComparison.OrdinalIgnoreCase))
+                return launch;
+            if (string.IsNullOrWhiteSpace(source))
+                return launch;
+
+            // 取 source 的目录部分（去掉末尾的文件名），得到静态根目录
+            var dir = source.Trim().Trim('"');
+            if (dir.IndexOf('.') > 0 && !dir.EndsWith("/") && !dir.EndsWith("\\"))
             {
+                // 形如 apps/ai/index.html → 取目录
                 try
                 {
-                    Console.WriteLine("关闭ASP.NET Core应用 (EmbeddedWebServer)");
-                    await Program.WebServer.StopAsync();
-                    Program.WebServer = null;
+                    var fullOrRelative = Path.IsPathRooted(dir)
+                        ? dir
+                        : Path.Combine(Directory.GetCurrentDirectory(), dir);
+                    var dirPart = Path.GetDirectoryName(fullOrRelative);
+                    if (!string.IsNullOrEmpty(dirPart))
+                    {
+                        // 还原成相对当前目录的写法
+                        dir = dirPart.StartsWith(Directory.GetCurrentDirectory(), StringComparison.OrdinalIgnoreCase)
+                            ? dirPart.Substring(Directory.GetCurrentDirectory().Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                            : dirPart;
+                    }
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"关闭ASP.NET Core应用时出错: {ex.Message}");
-                }
+                catch { }
+            }
+            dir = dir.TrimEnd('/', '\\');
+
+            return $"{launch.TrimEnd()} --staticDir {dir}";
+        }
+
+        /// <summary>
+        /// 尝试解析 Run 配置中的程序路径，用于配置验证（不会真正启动进程）。
+        /// </summary>
+        public string? TryResolveProgram(string program)
+        {
+            if (string.IsNullOrWhiteSpace(program))
+                return null;
+            return ResolveProgramPath(program.Trim());
+        }
+
+        private string? ResolveProgramPath(string program)
+        {
+            if (Path.IsPathRooted(program) && File.Exists(program))
+                return program;
+
+            // 相对 apps 目录解析
+            var candidate = Path.Combine(_appBasePath, program);
+            if (File.Exists(candidate))
+                return candidate;
+
+            // 在 apps 子目录中递归查找同名可执行文件
+            try
+            {
+                var matches = Directory.GetFiles(_appBasePath, program, SearchOption.AllDirectories);
+                if (matches.Length > 0)
+                    return matches[0];
+            }
+            catch { }
+
+            // 回退到系统 PATH（含常见 .exe/.bat/.cmd）
+            if (File.Exists(program))
+                return program;
+
+            foreach (var ext in new[] { "", ".exe", ".bat", ".cmd" })
+            {
+                var p = program + ext;
+                var fromPath = GetFromPath(p);
+                if (fromPath != null)
+                    return fromPath;
             }
 
-            // 清理旧的进程列表
-            var processesToStop = _runningAspNetCoreProcesses.ToList();
-            foreach (var (url, process) in processesToStop)
+            return null;
+        }
+
+        private static string? GetFromPath(string fileName)
+        {
+            var values = Environment.GetEnvironmentVariable("PATH");
+            if (values == null)
+                return null;
+            foreach (var dir in values.Split(Path.PathSeparator))
             {
                 try
                 {
-                    if (!process.HasExited)
+                    var full = Path.Combine(dir, fileName);
+                    if (File.Exists(full))
+                        return full;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        private void RemoveProcess(Process process)
+        {
+            lock (_procLock)
+            {
+                _runningProcesses.Remove(process);
+            }
+            try { process.Dispose(); } catch { }
+        }
+
+        /// <summary>
+        /// 终止并清理所有由本服务启动的子进程，避免退出时留下孤儿进程。
+        /// </summary>
+        public void KillAll()
+        {
+            List<Process> snapshot;
+            lock (_procLock)
+            {
+                snapshot = new List<Process>(_runningProcesses);
+                _runningProcesses.Clear();
+                _usedPorts.Clear();
+            }
+
+            foreach (var p in snapshot)
+            {
+                try
+                {
+                    if (!p.HasExited)
                     {
-                        Console.WriteLine($"关闭ASP.NET Core应用: {url}, 进程ID: {process.Id}");
-                        process.Kill();
-                        process.WaitForExit(1000);
+                        Logger.Info($"正在终止子进程 PID={p.Id} ({p.ProcessName})");
+                        p.Kill(true); // 含子进程树
+                        if (!p.WaitForExit(5000))
+                            Logger.Warning($"子进程 PID={p.Id} 未能在 5s 内退出。");
                     }
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"关闭ASP.NET Core应用时出错: {ex.Message}");
+                    Logger.Warning($"终止子进程 PID={p.Id} 失败: {ex.Message}");
                 }
                 finally
                 {
-                    _runningAspNetCoreProcesses.Remove(url);
+                    try { p.Dispose(); } catch { }
                 }
             }
+
+            // 释放 Job Object（会触发其中所有残留进程被终止）
+            try
+            {
+                if (_job.IsValueCreated)
+                    _job.Value?.Dispose();
+            }
+            catch { }
         }
 
         /// <summary>
-        /// 验证Run字段配置
+        /// Windows Job Object 封装：将子进程加入 Job，主进程退出时由操作系统
+        /// 自动终止 Job 内的全部进程（含脱离父进程树的后代）。
         /// </summary>
-        public string ValidateRunConfig(string appId)
+        private sealed class JobObject : IDisposable
         {
-            var appConfig = GetAppConfig(appId);
-            if (appConfig == null)
-                return $"应用 '{appId}' 不存在";
+            private readonly IntPtr _handle;
+            private bool _disposed;
 
-            if (string.IsNullOrWhiteSpace(appConfig.Run))
-                return $"应用 '{appId}' 的Run字段为空";
+            private JobObject(IntPtr handle) => _handle = handle;
 
-            var programPaths = ParseProgramPaths(appConfig.Run);
-            if (programPaths.Length == 0)
-                return $"应用 '{appId}' 的Run字段没有有效的程序路径";
-
-            var results = new System.Text.StringBuilder();
-            results.AppendLine($"应用 '{appId}' 的Run字段验证结果:");
-            results.AppendLine($"  共 {programPaths.Length} 个程序路径");
-
-            for (int i = 0; i < programPaths.Length; i++)
+            public static JobObject? Create()
             {
-                var path = programPaths[i];
-                
-                // 检查是否是ASP.NET Core本地主机URL
-                if (IsAspNetCoreLocalhostUrl(path))
+                try
                 {
-                    results.AppendLine($"  [{i + 1}] ✅ {path} (ASP.NET Core应用)");
+                    var hJob = CreateJobObject(IntPtr.Zero, null);
+                    if (hJob == IntPtr.Zero)
+                    {
+                        Logger.Warning($"创建 Job Object 失败 (LastError={Marshal.GetLastWin32Error()})，将降级为 Kill(true) 清理。");
+                        return null;
+                    }
+
+                    var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+                    {
+                        BasicLimitInformation = new JOBOBJECT_BASIC_LIMIT_INFORMATION
+                        {
+                            LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                        }
+                    };
+
+                    var length = Marshal.SizeOf<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>();
+                    if (!SetInformationJobObject(hJob, JobObjectInfoClass.ExtendedLimitInformation,
+                            ref info, length))
+                    {
+                        Logger.Warning($"设置 Job Object 限制失败 (LastError={Marshal.GetLastWin32Error()})。");
+                        CloseHandle(hJob);
+                        return null;
+                    }
+
+                    return new JobObject(hJob);
                 }
-                else
+                catch (Exception ex)
                 {
-                    var resolvedPath = ResolveProgramPath(path);
-                    
-                    if (string.IsNullOrEmpty(resolvedPath) || 
-                        (!File.Exists(resolvedPath) && !Directory.Exists(resolvedPath)))
-                    {
-                        results.AppendLine($"  [{i + 1}] ❌ {path} (未找到)");
-                    }
-                    else
-                    {
-                        var exists = File.Exists(resolvedPath) ? "文件" : "目录";
-                        results.AppendLine($"  [{i + 1}] ✅ {path} -> {resolvedPath} ({exists})");
-                    }
+                    Logger.Warning($"创建 Job Object 异常: {ex.Message}");
+                    return null;
                 }
             }
 
-            return results.ToString();
+            public void AddProcess(Process process)
+            {
+                if (_disposed)
+                    return;
+                // 必须使用进程句柄，而非 PID（PID 可能复用）
+                if (!AssignProcessToJobObject(_handle, process.Handle))
+                {
+                    throw new InvalidOperationException(
+                        $"AssignProcessToJobObject 失败 (LastError={Marshal.GetLastWin32Error()})");
+                }
+            }
+
+            public void Dispose()
+            {
+                if (_disposed)
+                    return;
+                _disposed = true;
+                try { if (_handle != IntPtr.Zero) CloseHandle(_handle); } catch { }
+            }
+
+            // ---- P/Invoke ----
+            private const int JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+
+            [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+            private static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string? lpName);
+
+            [DllImport("kernel32.dll", SetLastError = true)]
+            private static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
+
+            [DllImport("kernel32.dll", SetLastError = true)]
+            private static extern bool SetInformationJobObject(IntPtr hJob,
+                JobObjectInfoClass jobObjectInfoClass,
+                ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION lpJobObjectInfo,
+                int cbJobObjectInfoLength);
+
+            [DllImport("kernel32.dll", SetLastError = true)]
+            private static extern bool CloseHandle(IntPtr hObject);
+
+            private enum JobObjectInfoClass
+            {
+                ExtendedLimitInformation = 9
+            }
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+            {
+                public long PerProcessUserTimeLimit;
+                public long PerJobUserTimeLimit;
+                public int LimitFlags;
+                public UIntPtr MinimumWorkingSetSize;
+                public UIntPtr MaximumWorkingSetSize;
+                public int ActiveProcessLimit;
+                public IntPtr Affinity;
+                public int PriorityClass;
+                public int SchedulingClass;
+            }
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct IO_COUNTERS
+            {
+                public ulong ReadOperationCount;
+                public ulong WriteOperationCount;
+                public ulong OtherOperationCount;
+                public ulong ReadTransferCount;
+                public ulong WriteTransferCount;
+                public ulong OtherTransferCount;
+            }
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+            {
+                public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+                public IO_COUNTERS IoInfo;
+                public UIntPtr ProcessMemoryLimit;
+                public UIntPtr JobMemoryLimit;
+                public UIntPtr PeakProcessMemoryUsed;
+                public UIntPtr PeakJobMemoryUsed;
+            }
         }
     }
 }

@@ -23,17 +23,17 @@ namespace WebAppLauncher.Services
             var apps = new List<WebAppInfo>();
             var settings = _configService.GetAppSettings();
 
-            foreach (var appConfig in settings.WebAppSettings.Apps)
+            foreach (var appConfig in settings.Apps)
             {
-                var isUrl = PathHelper.IsUrl(appConfig.Path);
-                var isAvailable = PathHelper.IsPathAvailable(_appsBasePath, appConfig.Path);
-                var displayPath = isUrl ? appConfig.Path : Path.Combine(_appsBasePath, appConfig.Path);
-                
+                var isUrl = PathHelper.IsUrl(appConfig.Source);
+                var isAvailable = PathHelper.IsPathAvailable(_appsBasePath, appConfig.Source);
+                var displayPath = isUrl ? appConfig.Source : Path.Combine(_appsBasePath, appConfig.Source);
+
                 apps.Add(new WebAppInfo
                 {
-                    Id = appConfig.AppId,
+                    Id = appConfig.Id,
                     Name = appConfig.Name,
-                    Path = appConfig.Path,
+                    Path = appConfig.Source,
                     Title = appConfig.Title,
                     IsAvailable = isAvailable,
                     FullPath = displayPath,
@@ -50,7 +50,7 @@ namespace WebAppLauncher.Services
             {
                 var settings = _configService.GetAppSettings();
                 
-                if (!settings.WebAppSettings.Apps.Any(x=>x.AppId==appId))
+                if (!settings.Apps.Any(x=>x.Id==appId))
                 {
                     return false;
                 }
@@ -61,7 +61,7 @@ namespace WebAppLauncher.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"切换应用时出错: {ex.Message}");
+                Logger.Error($"切换应用时出错: {ex.Message}", ex);
                 return false;
             }
         }
@@ -69,17 +69,17 @@ namespace WebAppLauncher.Services
         public string? GetAppPath(string appId)
         {
             var settings = _configService.GetAppSettings();
-            var appConfig= settings.WebAppSettings.Apps.FirstOrDefault(x => x.AppId == appId);
+            var appConfig= settings.Apps.FirstOrDefault(x => x.Id == appId);
             if (appConfig!=null)
             {
                 // 如果是网址，直接返回网址
-                if (PathHelper.IsUrl(appConfig.Path))
+                if (PathHelper.IsUrl(appConfig.Source))
                 {
-                    return appConfig.Path;
+                    return appConfig.Source;
                 }
-                
+
                 // 否则返回本地文件路径
-                return Path.Combine(_appsBasePath, appConfig.Path);
+                return Path.Combine(_appsBasePath, appConfig.Source);
             }
 
             return null;
@@ -89,10 +89,10 @@ namespace WebAppLauncher.Services
         {
             var settings = _configService.GetAppSettings();
             
-            var appConfig= settings.WebAppSettings.Apps.FirstOrDefault(x=>x.AppId == appId);
+            var appConfig= settings.Apps.FirstOrDefault(x=>x.Id == appId);
             if (appConfig!=null)
             {
-                return PathHelper.IsPathAvailable(_appsBasePath, appConfig.Path);
+                return PathHelper.IsPathAvailable(_appsBasePath, appConfig.Source);
             }
 
             return false;
@@ -114,7 +114,7 @@ namespace WebAppLauncher.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"打开应用目录时出错: {ex.Message}");
+                Logger.Error($"打开应用目录时出错: {ex.Message}", ex);
             }
         }
 
@@ -267,11 +267,11 @@ namespace WebAppLauncher.Services
 </html>";
 
                 File.WriteAllText(indexPath, htmlContent);
-                Console.WriteLine($"示例应用已创建: {appDir}");
+                Logger.Info($"示例应用已创建: {appDir}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"创建示例应用时出错: {ex.Message}");
+                Logger.Error($"创建示例应用时出错: {ex.Message}", ex);
             }
         }
     }
